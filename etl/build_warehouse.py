@@ -7,10 +7,22 @@ one command the refresh workflow needs). Sources with no export available
 yet (project earnings & labor) are skipped with a warning rather than
 failing the whole build -- see parse_earnings.py.
 
-Every run replaces the warehouse tables (CREATE OR REPLACE) from the
-latest files in data/raw/, keyed by a `snapshot_date` column so monthly
-history can accumulate if this script is run against archived exports
-over time (see README.md for the monthly refresh + archive workflow).
+Every table carries a `snapshot_date` column, and every run *upserts*
+by that column rather than wiping the table: rows for any snapshot_date
+present in this run's data replace the old rows for that same date, and
+every other date already in the warehouse is left alone. That's what
+lets you either (a) run this weekly/monthly as new exports arrive, or
+(b) drop several weeks/months of archived exports into data/raw/ at
+once and backfill real history in a single run -- both parsers that
+carry a genuine per-row date (parse_ar_detail's "Aged as of", parse_gl's
+trial balance period) process every matching file, not just the newest,
+and each row keeps its own date rather than being stamped with today's.
+Sources with no such date of their own (ar_aging, WIP, AP, receipts)
+still use the run's snapshot_date -- picking their newest file is a
+"batch daily/weekly, one date per run" model rather than one file per
+date. If a parser's output schema changes, rebuild from empty (delete
+data/processed/warehouse.duckdb) rather than upserting into an old
+schema.
 """
 from __future__ import annotations
 
@@ -36,20 +48,52 @@ logger = logging.getLogger("somos.etl.warehouse")
 _TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no", "client_name_confidence"}
 
 
-def _create_table(con: duckdb.DuckDBPyConnection, table: str, rows: list[dict], snapshot_date: date):
+def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
+    return (
+        con.execute("SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]).fetchone()
+        is not None
+    )
+
+
+def _create_table(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    rows: list[dict],
+    default_snapshot_date: date,
+    snapshot_date_col: str | None = None,
+):
+    """Upserts `rows` into `table` by snapshot_date: replaces every row
+    whose snapshot_date matches one present in `rows`, leaves all other
+    snapshot_dates already in the table untouched. If `snapshot_date_col`
+    names a column the rows already carry (e.g. an "as of" date read from
+    the source itself), that value is used as-is instead of
+    `default_snapshot_date` -- so a batch of files spanning several dates
+    lands as several distinct snapshots, not one."""
     if not rows:
         logger.warning("Skipping table %s -- no rows available", table)
         return
     for r in rows:
-        r["snapshot_date"] = snapshot_date
+        if snapshot_date_col and r.get(snapshot_date_col) is not None:
+            r["snapshot_date"] = r[snapshot_date_col]
+        else:
+            r.setdefault("snapshot_date", default_snapshot_date)
     columns = list(rows[0].keys())
     df = pd.DataFrame(rows)
     for col in _TEXT_COLUMNS & set(df.columns):
         df[col] = df[col].astype("string")
     con.register("_tmp_rows", df)
-    con.execute(f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM _tmp_rows")
+    if not _table_exists(con, table):
+        con.execute(f"CREATE TABLE {table} AS SELECT * FROM _tmp_rows")
+    else:
+        dates = df["snapshot_date"].unique().tolist()
+        placeholders = ", ".join("?" for _ in dates)
+        con.execute(f"DELETE FROM {table} WHERE snapshot_date IN ({placeholders})", dates)
+        con.execute(f"INSERT INTO {table} SELECT * FROM _tmp_rows")
     con.unregister("_tmp_rows")
-    logger.info("Loaded table %s: %d rows, columns=%s", table, len(rows), columns)
+    n_dates = df["snapshot_date"].nunique()
+    logger.info(
+        "Loaded table %s: %d rows across %d snapshot date(s), columns=%s", table, len(rows), n_dates, columns
+    )
 
 
 def build(snapshot_date: date | None = None) -> Path:
@@ -68,9 +112,12 @@ def build(snapshot_date: date | None = None) -> Path:
         logger.warning(str(e))
 
     # --- AR detail (client-level, from the "All AR Report" export) ----
+    # Every matching PDF is parsed (not just the newest) and each row
+    # keeps its own "Aged as of" date, so dropping several weeks in at
+    # once backfills real history instead of collapsing to one snapshot.
     ar_detail_rows, _ = parse_ar_detail.parse()
     parse_ar_detail.write_processed(ar_detail_rows)
-    _create_table(con, "ar_aging_detail", ar_detail_rows, snapshot_date)
+    _create_table(con, "ar_aging_detail", ar_detail_rows, snapshot_date, snapshot_date_col="as_of_date")
 
     # --- WIP ----------------------------------------------------------
     try:
@@ -101,9 +148,13 @@ def build(snapshot_date: date | None = None) -> Path:
     _create_table(con, "earnings", earnings_rows, snapshot_date)
 
     # --- GL trial balance -----------------------------------------------
+    # Reads every matching file (Vantagepoint runs trial balances per
+    # entity), and each row keeps its own period_end as snapshot_date, so
+    # dropping several months in at once backfills a real revenue-by-
+    # month-by-entity trend instead of one snapshot.
     gl_rows = parse_gl.parse()
     parse_gl.write_processed(gl_rows)
-    _create_table(con, "gl_trial_balance", gl_rows, snapshot_date)
+    _create_table(con, "gl_trial_balance", gl_rows, snapshot_date, snapshot_date_col="period_end")
 
     # --- Origination credits --------------------------------------------
     origination_rows, origination_flagged = parse_originations.parse()

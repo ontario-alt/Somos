@@ -28,9 +28,9 @@ def variance_table(
         use_container_width=True,
         hide_index=True,
         column_config={
-            current_header: st.column_config.NumberColumn(format="$%.0f"),
-            prior_header: st.column_config.NumberColumn(format="$%.0f"),
-            "Variance ($)": st.column_config.NumberColumn(format="$%.0f"),
+            current_header: st.column_config.NumberColumn(format="$%,.0f"),
+            prior_header: st.column_config.NumberColumn(format="$%,.0f"),
+            "Variance ($)": st.column_config.NumberColumn(format="$%,.0f"),
             "Variance (%)": st.column_config.NumberColumn(format="%.1f%%"),
         },
     )

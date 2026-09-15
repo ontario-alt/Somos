@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pdfplumber
 
 import config
-from etl.common import find_latest_file, parse_vp_date
+from etl.common import find_all_files, parse_vp_date
 
 logger = logging.getLogger("somos.etl.ar_detail")
 
@@ -88,16 +88,7 @@ def _nearest_column(x1: float, columns: dict[str, float]) -> str:
     return min(columns.items(), key=lambda kv: abs(kv[1] - x1))[0]
 
 
-def parse(path: Path | None = None) -> tuple[list[dict], dict | None]:
-    path = path or find_latest_file(config.RAW_DATA_DIR, config.SOURCE_FILE_PATTERNS.get("ar_detail", "*All*AR*Report*.pdf"))
-    if path is None:
-        logger.warning(
-            "No 'All AR Report' PDF found in %s -- skipping. Client-level AR "
-            "rollups (weekly Summary/Priority Board/Client Rollup) will be "
-            "unavailable until one is added.",
-            config.RAW_DATA_DIR,
-        )
-        return [], None
+def _parse_one(path: Path) -> tuple[list[dict], dict | None]:
     logger.info("Parsing All AR Report: %s", path)
 
     entity_map = {"LLC": "Somos Group LLC", "LLP": "Somos Law Group LLP"}
@@ -200,8 +191,31 @@ def parse(path: Path | None = None) -> tuple[list[dict], dict | None]:
         else:
             logger.info("Parsed totals reconcile exactly to the report's Final Totals line.")
 
-    logger.info("Parsed %d client/matter AR rows", len(rows))
+    logger.info("Parsed %d client/matter AR rows from %s", len(rows), path.name)
     return rows, final_totals
+
+
+def parse(paths: list[Path] | None = None) -> tuple[list[dict], dict | None]:
+    """Parses every matching "All AR Report" PDF in data/raw/, not just the
+    newest -- each carries its own "Aged as of" date (the as_of_date
+    column), so dropping several weeks' worth of exports in at once
+    backfills real history rather than only ever holding one snapshot."""
+    paths = paths or find_all_files(config.RAW_DATA_DIR, config.SOURCE_FILE_PATTERNS["ar_detail"])
+    if not paths:
+        logger.warning(
+            "No 'All AR Report' PDF found in %s -- skipping. Client-level AR "
+            "rollups (weekly Summary/Priority Board/Client Rollup) will be "
+            "unavailable until one is added.",
+            config.RAW_DATA_DIR,
+        )
+        return [], None
+    all_rows: list[dict] = []
+    last_final_totals = None
+    for path in paths:
+        rows, final_totals = _parse_one(path)
+        all_rows.extend(rows)
+        last_final_totals = final_totals
+    return all_rows, last_final_totals
 
 
 def write_processed(rows: list[dict], out_path: Path | None = None) -> Path | None:

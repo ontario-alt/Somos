@@ -180,7 +180,7 @@ def _section_ar_aging():
         use_container_width=True,
         hide_index=True,
         column_config={
-            c: st.column_config.NumberColumn(format="$%.0f")
+            c: st.column_config.NumberColumn(format="$%,.0f")
             for c in ["Current", "31-60", "61-90", "91-120", "Over 120", "Balance", "Over 90 Days"]
         }
         | {"% of Total": st.column_config.NumberColumn(format="%.1f%%"), "% Over 90": st.column_config.NumberColumn(format="%.1f%%")},
@@ -201,8 +201,8 @@ def _section_ar_aging():
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Balance": st.column_config.NumberColumn(format="$%.0f"),
-            "Over 90 Days": st.column_config.NumberColumn(format="$%.0f"),
+            "Balance": st.column_config.NumberColumn(format="$%,.0f"),
+            "Over 90 Days": st.column_config.NumberColumn(format="$%,.0f"),
             "% of Total AR": st.column_config.NumberColumn(format="%.1f%%"),
         },
     )
@@ -215,6 +215,7 @@ def _section_ar_aging():
     )
 
     st.markdown("**Concentration -- Ten Largest Client Balances**")
+    entity_abbrev = {v: k for k, v in config.MATTER_CODE_ENTITY_PREFIXES.items()}
     priority_rank = df["priority"].map(_PRIORITY_ORDER)
     df_ranked = df.assign(_rank=priority_rank)
     by_client = (
@@ -224,6 +225,7 @@ def _section_ar_aging():
             balance=("balance", "sum"),
             over_90=("over_90", "sum"),
             _rank=("_rank", "min"),
+            entity=("entity", lambda s: " / ".join(sorted({entity_abbrev.get(e, e) for e in s}))),
         )
         .reset_index()
         .sort_values("balance", ascending=False)
@@ -234,21 +236,22 @@ def _section_ar_aging():
     st.dataframe(
         top10.rename(
             columns={
-                "client_name": "Client", "matters": "Matters", "balance": "AR Balance",
+                "client_name": "Client", "entity": "Entity", "matters": "Matters", "balance": "AR Balance",
                 "over_90": "Over 90 Days", "pct_of_total": "% of Total AR", "priority": "Priority",
             }
-        )[["Client", "Matters", "AR Balance", "Over 90 Days", "% of Total AR", "Priority"]],
+        )[["Client", "Entity", "Matters", "AR Balance", "Over 90 Days", "% of Total AR", "Priority"]],
         use_container_width=True,
         hide_index=True,
         column_config={
-            "AR Balance": st.column_config.NumberColumn(format="$%.0f"),
-            "Over 90 Days": st.column_config.NumberColumn(format="$%.0f"),
+            "AR Balance": st.column_config.NumberColumn(format="$%,.0f"),
+            "Over 90 Days": st.column_config.NumberColumn(format="$%,.0f"),
             "% of Total AR": st.column_config.NumberColumn(format="%.1f%%"),
         },
     )
     st.caption(
         f"{by_client.shape[0]} client relationships across {len(df)} matters. Client priority "
-        "reflects the highest tier held by any of that client's matters."
+        "reflects the highest tier held by any of that client's matters; Entity concatenates "
+        "every entity that client has matters under (e.g. \"LLC / LLP\")."
     )
 
     with st.expander(f"Matter-level detail ({len(df)} matters, sorted by priority then balance)"):
@@ -275,7 +278,7 @@ def _section_ar_aging():
             use_container_width=True,
             hide_index=True,
             column_config={
-                c: st.column_config.NumberColumn(format="$%.0f")
+                c: st.column_config.NumberColumn(format="$%,.0f")
                 for c in ["Current", "31-60", "61-90", "91-120", "Over 120", "Balance", "Over 90 Days", "Aged 60+"]
             },
         )
@@ -313,7 +316,7 @@ def _section_ap_aging():
         detail,
         use_container_width=True,
         hide_index=True,
-        column_config={"balance": st.column_config.NumberColumn("Balance", format="$%.2f")},
+        column_config={"balance": st.column_config.NumberColumn("Balance", format="$%,.2f")},
     )
     st.caption(
         "Open balance = net of each invoice's voucher and payment lines in the AP export "

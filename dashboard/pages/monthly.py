@@ -15,6 +15,7 @@ from dashboard.charts.ranked_bar import ranked_bar
 from dashboard.charts.stacked_column import stacked_column_by_series
 from dashboard.charts.theme import fmt_currency, fmt_pct
 from dashboard.charts.treemap import wip_treemap
+from dashboard.charts.trend_line import trend_line
 from dashboard.data import query, table_exists
 
 
@@ -39,6 +40,9 @@ def render():
 
     st.divider()
     _section_billable_hours()
+
+    st.divider()
+    _section_revenue_by_month()
 
     st.divider()
     _section_pl_summary()
@@ -175,6 +179,37 @@ def _section_billable_hours():
     )
 
 
+def _section_revenue_by_month():
+    st.subheader("Revenue by Month by Entity")
+    if not table_exists("gl_trial_balance"):
+        missing_source("the GL trial balance export")
+        return
+    df = query(
+        """
+        SELECT
+            snapshot_date, entity,
+            -SUM(CASE WHEN account_type = 'Revenue' THEN closing_balance ELSE 0 END) AS revenue
+        FROM gl_trial_balance
+        GROUP BY snapshot_date, entity
+        ORDER BY snapshot_date, entity
+        """
+    )
+    if df.empty:
+        st.info("No GL revenue data available.")
+        return
+    df["snapshot_date"] = df["snapshot_date"].astype(str)
+    fig = trend_line(df, x_col="snapshot_date", y_col="revenue", series_col="entity")
+    st.plotly_chart(fig, use_container_width=True)
+    n_months = df["snapshot_date"].nunique()
+    st.caption(
+        f"{n_months} trial-balance period(s) loaded, one point per period_end date. Drop "
+        "multiple months of GL trial balances into data/raw/ (Vantagepoint runs these per "
+        "entity, so one file per entity per month) and re-run `python etl/build_warehouse.py` "
+        "to backfill a real month-over-month trend -- each file's own period is kept as its "
+        "own snapshot rather than collapsing to one date."
+    )
+
+
 def _section_pl_summary():
     st.subheader("P&L Summary")
     if not table_exists("gl_trial_balance"):
@@ -220,9 +255,9 @@ def _section_pl_summary():
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Revenue": st.column_config.NumberColumn(format="$%.0f"),
-            "Cost": st.column_config.NumberColumn(format="$%.0f"),
-            "Margin": st.column_config.NumberColumn(format="$%.0f"),
+            "Revenue": st.column_config.NumberColumn(format="$%,.0f"),
+            "Cost": st.column_config.NumberColumn(format="$%,.0f"),
+            "Margin": st.column_config.NumberColumn(format="$%,.0f"),
             "Margin %": st.column_config.NumberColumn(format="%.1f%%"),
         },
     )
@@ -264,9 +299,9 @@ def _section_timekeeper():
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Billing Value": st.column_config.NumberColumn(format="$%.0f"),
+            "Billing Value": st.column_config.NumberColumn(format="$%,.0f"),
             "Hours": st.column_config.NumberColumn(format="%.1f"),
-            "Effective Rate ($/hr)": st.column_config.NumberColumn(format="$%.0f"),
+            "Effective Rate ($/hr)": st.column_config.NumberColumn(format="$%,.0f"),
         },
     )
     st.caption(
