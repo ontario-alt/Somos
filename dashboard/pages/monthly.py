@@ -32,7 +32,7 @@ def _month_label(d) -> str:
 def render():
     st.title("Monthly Report")
 
-    if not table_exists("ar_aging") and not table_exists("wip_by_matter"):
+    if not table_exists("ar_aging_detail") and not table_exists("wip_by_matter"):
         st.warning("No AR or WIP data in the warehouse yet. Run `python etl/build_warehouse.py`.")
         return
 
@@ -65,15 +65,27 @@ def render():
 
 
 def _section_kpis():
-    ar_total = query("SELECT COALESCE(SUM(line_amount), 0) AS v FROM ar_aging").iloc[0]["v"] if table_exists("ar_aging") else None
-    wip_total = query("SELECT COALESCE(SUM(wip_amount), 0) AS v FROM wip_by_matter").iloc[0]["v"] if table_exists("wip_by_matter") else None
-    over_90 = (
+    # ar_aging_detail (the "All AR Report" / Somos AR Aging workbook
+    # source), not ar_aging (a static invoice-level CSV that was never
+    # refreshed): verified the two disagreed by ~$692K on the same date,
+    # almost entirely ($647K) in the Over-120 bucket, and most of that gap
+    # ($653K) matches client names now confirmed as GBNF -- old
+    # collectibles the firm already tracks separately. ar_aging_detail is
+    # the one that's actually current and already excludes them.
+    has_ar = table_exists("ar_aging_detail")
+    latest_ar = (
         query(
-            "SELECT COALESCE(SUM(days_91_120 + over_120), 0) AS v FROM ar_aging"
-        ).iloc[0]["v"]
-        if table_exists("ar_aging")
+            """
+            SELECT COALESCE(SUM(balance), 0) AS total, COALESCE(SUM(days_91_120 + over_120), 0) AS over_90
+            FROM ar_aging_detail WHERE as_of_date = (SELECT MAX(as_of_date) FROM ar_aging_detail)
+            """
+        ).iloc[0]
+        if has_ar
         else None
     )
+    ar_total = latest_ar["total"] if has_ar else None
+    over_90 = latest_ar["over_90"] if has_ar else None
+    wip_total = query("SELECT COALESCE(SUM(wip_amount), 0) AS v FROM wip_by_matter").iloc[0]["v"] if table_exists("wip_by_matter") else None
     matter_count = query("SELECT COUNT(*) AS v FROM wip_by_matter").iloc[0]["v"] if table_exists("wip_by_matter") else None
 
     kpi_row(
@@ -84,26 +96,44 @@ def _section_kpis():
             {"label": "Active matters (WIP)", "value": f"{matter_count:,.0f}" if matter_count is not None else "--"},
         ]
     )
+    if has_ar and table_exists("gbnf_ar_aging"):
+        gbnf_total = query("SELECT COALESCE(SUM(balance), 0) AS v FROM gbnf_ar_aging").iloc[0]["v"]
+        st.caption(
+            f"Total AR excludes {fmt_currency(gbnf_total)} in GBNF (Gone But Not Forgotten) "
+            "collectibles, tracked separately -- see the Weekly page. GBNF is never counted "
+            "toward the regular aging book's Over 120 / oldest totals."
+        )
 
 
 def _section_ar_by_entity():
     st.subheader("AR by Entity")
-    if not table_exists("ar_aging"):
-        missing_source("the AR aging export")
+    # ar_aging_detail, not ar_aging -- see the "why is Total AR so high"
+    # note on the KPI row above; this is the same actively-refreshed
+    # source, and it excludes GBNF.
+    if not table_exists("ar_aging_detail"):
+        missing_source("the 'All AR Report' or Somos AR Aging workbook export")
         return
     df = query(
         """
-        SELECT snapshot_date, entity, SUM(line_amount) AS ar_amount
-        FROM ar_aging
+        SELECT as_of_date, entity, SUM(balance) AS ar_amount
+        FROM ar_aging_detail
         WHERE entity IS NOT NULL
-        GROUP BY snapshot_date, entity
-        ORDER BY snapshot_date, entity
+        GROUP BY as_of_date, entity
+        ORDER BY as_of_date, entity
         """
     )
     if df.empty:
         st.info("No AR rows with a resolved entity.")
         return
-    df["month"] = df["snapshot_date"].map(_month_label)
+    df["month"] = df["as_of_date"].map(_month_label)
+    # AR balance is a point-in-time stock, not a flow -- summing every
+    # weekly snapshot that falls in the same month would inflate the
+    # total several-fold. Keep only each month's latest snapshot.
+    df = df.loc[df.groupby(["month", "entity"])["as_of_date"].idxmax()].reset_index(drop=True)
+    month_order = list(dict.fromkeys(df.sort_values("as_of_date")["month"]))
+    df["_rank"] = df["month"].map({m: i for i, m in enumerate(month_order)})
+    df = df.sort_values(["_rank", "entity"]).drop(columns="_rank")
+
     fig = stacked_column_by_series(
         df, x_col="month", y_col="ar_amount", series_col="entity", title=None, show_values=True,
         color_map=_ENTITY_COLORS,
@@ -111,7 +141,7 @@ def _section_ar_by_entity():
     st.plotly_chart(fig, use_container_width=True)
 
     pivot = df.pivot_table(index="month", columns="entity", values="ar_amount", aggfunc="sum", fill_value=0)
-    pivot = pivot.reindex(df.drop_duplicates("month").sort_values("snapshot_date")["month"])
+    pivot = pivot.reindex(month_order)
     pivot["Total"] = pivot.sum(axis=1)
     st.dataframe(
         pivot.reset_index().rename(columns={"month": "Month"}),
@@ -119,11 +149,11 @@ def _section_ar_by_entity():
         hide_index=True,
         column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in pivot.columns},
     )
-    ytd_total = df["ar_amount"].sum()
     st.caption(
-        f"YTD total across shown snapshots: {fmt_currency(ytd_total)}. "
-        "Currently one snapshot -- this chart accumulates a column per month "
-        "as `build_warehouse.py` runs over time."
+        f"Each bar is that month's latest AR snapshot (not a sum of the month's snapshots -- "
+        f"balance is a point-in-time figure, so summing several weekly snapshots in one month "
+        f"would overstate it). {month_order[-1]} reflects the {pd.Timestamp(df['as_of_date'].max()).date()} snapshot; "
+        "see the Weekly page for week-by-week movement within a month."
     )
 
 

@@ -78,6 +78,10 @@ SOURCE_FILE_PATTERNS = {
     # "Organization Name" field that doubles as a practice-group/
     # department taxonomy (e.g. "LLC Planning", "LLP Legal").
     "matter_list": ["*Matter*List*.xlsx"],
+    # "Gone But Not Forgotten" -- old collectibles tracked separately from
+    # the regular AR aging book. See parse_gbnf.py: deliberately its own
+    # table, never merged into ar_aging_detail's "oldest"/Over 120 totals.
+    "gbnf": ["*GBNF*.xlsx"],
     # Monthly billed-activity-by-client export (distinct from AR balance
     # and from cash receipts -- see etl/parse_ar_summary.py).
     "ar_summary": ["*AR*Summary*.csv", "*AR*Summary*.xlsx"],

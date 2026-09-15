@@ -44,6 +44,7 @@ from etl import (
     parse_ar_detail,
     parse_ar_summary,
     parse_earnings,
+    parse_gbnf,
     parse_employee_cost,
     parse_employee_targets,
     parse_gl,
@@ -145,6 +146,12 @@ def build(snapshot_date: date | None = None) -> Path:
     ar_detail_rows += workbook_rows
 
     _create_table(con, "ar_aging_detail", ar_detail_rows, snapshot_date, snapshot_date_col="as_of_date")
+
+    # --- GBNF (Gone But Not Forgotten) -- tracked separately, never merged
+    # into ar_aging_detail above, so it never inflates the main aging book. ---
+    gbnf_rows = parse_gbnf.parse()
+    parse_gbnf.write_processed(gbnf_rows)
+    _create_table(con, "gbnf_ar_aging", gbnf_rows, snapshot_date, snapshot_date_col="as_of_date")
 
     # --- WIP ----------------------------------------------------------
     try:

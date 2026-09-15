@@ -39,6 +39,8 @@ def render():
     st.divider()
     _section_ar_aging()
     st.divider()
+    _section_gbnf()
+    st.divider()
     _section_ap_aging()
     st.divider()
     _section_exceptions()
@@ -441,6 +443,53 @@ def _section_week_over_week(current_date, prior_date):
         "movement (new/cleared matters, which specific matters changed priority) isn't broken "
         "out yet -- ask if you want that added; the bucket and priority totals above are "
         "already real."
+    )
+
+
+def _section_gbnf():
+    st.subheader("Gone But Not Forgotten (GBNF)")
+    if not table_exists("gbnf_ar_aging"):
+        missing_source("the GBNF AR Aged export")
+        return
+    df = query(
+        """
+        SELECT entity, client_name, matter_name, current_0_30, days_31_60, days_61_90, days_91_120, over_120, balance
+        FROM gbnf_ar_aging
+        WHERE as_of_date = (SELECT MAX(as_of_date) FROM gbnf_ar_aging)
+        ORDER BY balance DESC
+        """
+    )
+    if df.empty:
+        st.info("No GBNF rows available.")
+        return
+    total = df["balance"].sum()
+    kpi_row(
+        [
+            {"label": "GBNF Total", "value": fmt_currency(total, short=True), "help": fmt_currency(total)},
+            {"label": "GBNF Matters", "value": f"{len(df)}"},
+            {"label": "Oldest-bucket share", "value": fmt_pct(df["over_120"].sum() / total * 100 if total else 0)},
+        ]
+    )
+    st.dataframe(
+        df.rename(
+            columns={
+                "entity": "Entity", "client_name": "Client", "matter_name": "Matter", "current_0_30": "Current",
+                "days_31_60": "31-60", "days_61_90": "61-90", "days_91_120": "91-120", "over_120": "Over 120",
+                "balance": "Balance",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            c: st.column_config.NumberColumn(format="$%,.0f")
+            for c in ["Current", "31-60", "61-90", "91-120", "Over 120", "Balance"]
+        },
+    )
+    st.caption(
+        "Old collectibles tracked separately from the regular AR aging book above -- never "
+        "counted in its Over 120 / oldest totals or in the Monthly page's Total AR, since these "
+        "are effectively written off rather than actively worked. Kept here so they're not lost "
+        "track of entirely, in case of a late recovery."
     )
 
 
