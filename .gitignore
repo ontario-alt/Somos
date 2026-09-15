@@ -1,0 +1,15 @@
+# Vantagepoint exports and derived data are real client financial data --
+# never committed. data/raw is a config-driven pointer at your local
+# OneDrive sync folder; data/processed and the warehouse are regenerated
+# by etl/build_warehouse.py.
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+*.duckdb
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.streamlit/secrets.toml
