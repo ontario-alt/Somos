@@ -37,6 +37,8 @@ def render():
 
     _section_ar_trend()
     st.divider()
+    _section_monthly_billings()
+    st.divider()
     _section_wip_aging_trend()
     st.divider()
     _section_revenue_by_matter_type()
@@ -70,6 +72,35 @@ def _section_ar_trend():
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _section_monthly_billings():
+    st.subheader("Monthly Billings by Entity")
+    if not table_exists("ar_summary_monthly"):
+        missing_source("the AR Summary export (monthly billed activity by client)")
+        return
+    df = query(
+        """
+        SELECT month_date, entity, SUM(amount) AS billed
+        FROM ar_summary_monthly
+        WHERE month_date <= date_trunc('month', CURRENT_DATE)
+        GROUP BY month_date, entity
+        ORDER BY month_date, entity
+        """
+    )
+    if df.empty:
+        st.info("No AR Summary data available.")
+        return
+    df["month_date"] = df["month_date"].astype(str)
+    fig = trend_line(df, x_col="month_date", y_col="billed", series_col="entity")
+    st.plotly_chart(fig, use_container_width=True)
+    n_months = df["month_date"].nunique()
+    st.caption(
+        f"{n_months} month(s) of billed activity from the AR Summary export -- distinct from "
+        "AR balance (a point-in-time snapshot, the chart above) and from cash receipts (money "
+        "actually collected, on the Weekly page). Months later than the current one read as $0 "
+        "in the export and are excluded here rather than shown as a drop to zero."
+    )
+
+
 def _section_wip_aging_trend():
     st.subheader("WIP Aging Trend -- Avg. Days Outstanding")
     if not table_exists("wip_transactions"):
@@ -100,12 +131,41 @@ def _section_wip_aging_trend():
 
 
 def _section_revenue_by_matter_type():
-    st.subheader("Revenue by Matter Type")
-    missing_source("a matter-type / practice-area field (not present in AR, WIP, or receipts exports)")
+    st.subheader("AR by Practice Group")
+    if not (table_exists("ar_aging") and table_exists("matter_list")):
+        missing_source("the AR aging export + the matter list export (for the practice-group taxonomy)")
+        return
+    df = query(
+        """
+        SELECT a.snapshot_date, COALESCE(m.organization_name, 'Unmapped') AS practice_group, SUM(a.line_amount) AS ar_amount
+        FROM ar_aging a
+        LEFT JOIN matter_list m ON a.matter_code = m.matter_code
+        GROUP BY a.snapshot_date, practice_group
+        ORDER BY a.snapshot_date, practice_group
+        """
+    )
+    if df.empty:
+        st.info("No AR data to break down by practice group.")
+        return
+    df["snapshot_date"] = df["snapshot_date"].astype(str)
+    fig = stacked_area_by_series(df, x_col="snapshot_date", y_col="ar_amount", series_col="practice_group")
+    st.plotly_chart(fig, use_container_width=True)
+    match = query(
+        """
+        SELECT
+            COUNT(DISTINCT a.matter_code) AS total,
+            COUNT(DISTINCT CASE WHEN m.matter_code IS NOT NULL THEN a.matter_code END) AS matched
+        FROM ar_aging a
+        LEFT JOIN matter_list m ON a.matter_code = m.matter_code
+        """
+    ).iloc[0]
     st.caption(
-        "Chart component is ready (dashboard/charts/stacked_area.py::stacked_area_by_series) -- "
-        "wire it up once matter type is available, e.g. as a Vantagepoint custom field on the "
-        "matter export."
+        f"Proxy: AR outstanding by practice group (matter_list.organization_name), not "
+        f"recognized revenue -- the GL trial balance has no matter-level detail to break out "
+        f"by practice group directly. {match['matched']}/{match['total']} matters "
+        f"({match['matched'] / match['total'] * 100:.0f}%) matched to the matter list by matter "
+        f"code; unmatched matters group as \"Unmapped\". One snapshot today -- fills into a real "
+        f"trend as more AR aging snapshots accumulate."
     )
 
 

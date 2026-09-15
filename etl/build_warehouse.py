@@ -37,7 +37,18 @@ import duckdb
 import pandas as pd
 
 import config
-from etl import parse_ap, parse_ar, parse_ar_detail, parse_earnings, parse_gl, parse_originations, parse_receipts, parse_wip
+from etl import (
+    parse_ap,
+    parse_ar,
+    parse_ar_detail,
+    parse_ar_summary,
+    parse_earnings,
+    parse_gl,
+    parse_matter_list,
+    parse_originations,
+    parse_receipts,
+    parse_wip,
+)
 
 logger = logging.getLogger("somos.etl.warehouse")
 
@@ -155,6 +166,19 @@ def build(snapshot_date: date | None = None) -> Path:
     gl_rows = parse_gl.parse()
     parse_gl.write_processed(gl_rows)
     _create_table(con, "gl_trial_balance", gl_rows, snapshot_date, snapshot_date_col="period_end")
+
+    # --- AR Summary (monthly billed activity by client) -----------------
+    # Each row already carries its own month -- tagging by month_date
+    # means this one file backfills 9-12 real historical snapshots
+    # instead of collapsing to a single run date.
+    ar_summary_rows = parse_ar_summary.parse()
+    parse_ar_summary.write_processed(ar_summary_rows)
+    _create_table(con, "ar_summary_monthly", ar_summary_rows, snapshot_date, snapshot_date_col="month_date")
+
+    # --- Matter master list (matter code -> client -> entity -> org) ----
+    matter_rows = parse_matter_list.parse()
+    parse_matter_list.write_processed(matter_rows)
+    _create_table(con, "matter_list", matter_rows, snapshot_date)
 
     # --- Origination credits --------------------------------------------
     origination_rows, origination_flagged = parse_originations.parse()

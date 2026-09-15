@@ -1,32 +1,33 @@
 """
-Parse the Vantagepoint "All AR Report" export (PDF) into a tidy,
-client-level AR aging table.
+Parse the Vantagepoint "All AR Report" export into a tidy, client-level
+AR aging table. Two source formats are handled: a real .xlsx export
+(values in their own cells -- reliable) and a .pdf export (values
+recovered by matching each number's x-position against the header's
+column positions, since blank cells are simply absent, not "0.00" --
+inherently more fragile). When both are present for the same "Aged as
+of" date, the .xlsx one wins; see parse().
 
 This is a *different* Vantagepoint report than the AR Aging export
 parse_ar.py handles: that one is invoice/payment-line detail with no
 client field (just a matter code + free-text description); this one is
 matter-level with an explicit client name, grouped by entity
-("Company: LLC ..." / "Company: LLP ..." break lines), one row per
-matter reading "Total for <Client> - <Matter> <bucket amounts...>".
-This is the source the target weekly AR report (Summary / Priority
-Board / Client Rollup) is built from -- client-level rollups and
-concentration need the client field this report has and the other one
-doesn't.
+("Company: LLC ..." / "Company: LLP ..." / "Company: MEX ..." break
+lines), one row per matter reading "Total for <Client> - <Matter>
+<bucket amounts...>". This is the source the target weekly AR report
+(Summary / Priority Board / Client Rollup) is built from -- client-level
+rollups and concentration need the client field this report has and the
+other one doesn't.
 
-Only a PDF sample has been provided. Vantagepoint can very likely export
-this same report to CSV or Excel too, which would be far more reliable
-than PDF layout parsing -- ask for that if this ever breaks on a new
-export. Column values are recovered by matching each number's x-position
-against the header's column x-positions (blank cells are simply absent
-in the PDF, not "0.00", so this can't be done by column order alone).
-Verified against the sample: computed bucket sums reconcile exactly to
-the report's own "Final Totals" line.
+Verified against samples of both formats: computed bucket sums reconcile
+exactly to each report's own "Final Totals" line.
 
-Known limitation: a handful of rows (1 of 104 in the sample) lose their
-client segment when the PDF's own line-wrap drops it before the parser
-ever sees it (the row prints just the matter name, no "<client> - "
-prefix) -- these come through with client_name == matter_name. Flagged
-via the `client_name_confidence` column rather than silently guessed at.
+Known limitation: a handful of rows (e.g. "Wyvernwood Garden Apartments",
+"Napa Property" in the samples -- consistent across both the .xlsx and
+.pdf exports, so it's a genuine source characteristic, not a parsing
+bug) have no " - " separator between client and matter, meaning
+Vantagepoint didn't record a distinct client for that row. These come
+through with client_name == matter_name, flagged via the
+`client_name_confidence` column rather than silently guessed at.
 
 Output grain: one row per (entity, client, matter):
     entity, client_name, matter_name, client_name_confidence,
@@ -58,7 +59,7 @@ _HEADER_LABELS = {
     "Balance": "balance",
 }
 _AS_OF_RE = re.compile(r"Aged as of\s+(\d{1,2}/\d{1,2}/\d{4})")
-_COMPANY_RE = re.compile(r"Company:\s*(LLC|LLP)")
+_COMPANY_RE = re.compile(r"Company:\s*(\w+)")
 _FOOTER_RE = re.compile(r"^-\s*Page")
 
 
@@ -88,10 +89,9 @@ def _nearest_column(x1: float, columns: dict[str, float]) -> str:
     return min(columns.items(), key=lambda kv: abs(kv[1] - x1))[0]
 
 
-def _parse_one(path: Path) -> tuple[list[dict], dict | None]:
-    logger.info("Parsing All AR Report: %s", path)
+def _parse_one_pdf(path: Path) -> tuple[list[dict], dict | None]:
+    logger.info("Parsing All AR Report (PDF): %s", path)
 
-    entity_map = {"LLC": "Somos Group LLC", "LLP": "Somos Law Group LLP"}
     rows: list[dict] = []
     final_totals: dict | None = None
     entity = None
@@ -120,7 +120,7 @@ def _parse_one(path: Path) -> tuple[list[dict], dict | None]:
 
                 m = _COMPANY_RE.search(text_line)
                 if m:
-                    entity = entity_map[m.group(1)]
+                    entity = config.MATTER_CODE_ENTITY_PREFIXES.get(m.group(1), m.group(1))
                     i += 1
                     continue
 
@@ -195,26 +195,147 @@ def _parse_one(path: Path) -> tuple[list[dict], dict | None]:
     return rows, final_totals
 
 
+def _parse_one_xlsx(path: Path) -> tuple[list[dict], dict | None]:
+    """Same report, real Excel export -- no position-matching needed,
+    values are already in their own cells. Verified against a sample:
+    layout is A=label ("Total for <Client> - <Matter>"), E=Current,
+    H=31-60, I=61-90, J=91-120, L=Over 120, O=Balance; "Company: LLC/LLP
+    ..." break rows set entity, "Final Totals (Interest Included)" is
+    the reconciliation row -- same semantics as the PDF version."""
+    logger.info("Parsing All AR Report (xlsx): %s", path)
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb.active
+
+    as_of = None
+    for r in range(1, min(ws.max_row, 15) + 1):
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(r, c).value
+            if isinstance(v, str):
+                m = _AS_OF_RE.search(v)
+                if m:
+                    as_of = parse_vp_date(m.group(1))
+
+    rows: list[dict] = []
+    final_totals: dict | None = None
+    entity = None
+    company_re = re.compile(r"Company:\s*(\w+)")
+
+    for r in range(1, ws.max_row + 1):
+        label = ws.cell(r, 1).value
+        if not isinstance(label, str) or not label.strip():
+            continue
+        label = label.strip()
+
+        m = company_re.match(label)
+        if m:
+            entity = config.MATTER_CODE_ENTITY_PREFIXES.get(m.group(1), m.group(1))
+            continue
+
+        if label.startswith("Final Totals (Interest Included)"):
+            final_totals = {
+                "current_0_30": ws.cell(r, 5).value or 0.0,
+                "days_31_60": ws.cell(r, 8).value or 0.0,
+                "days_61_90": ws.cell(r, 9).value or 0.0,
+                "days_91_120": ws.cell(r, 10).value or 0.0,
+                "over_120": ws.cell(r, 12).value or 0.0,
+                "balance": ws.cell(r, 15).value or 0.0,
+            }
+            continue
+
+        if not label.startswith("Total for"):
+            continue
+
+        text = re.sub(r"^Total for\s*", "", label).strip()
+        if " - " in text:
+            client_name, matter_name = text.split(" - ", 1)
+            confidence = "ok"
+        else:
+            client_name, matter_name = text, text
+            confidence = "matter_only"
+
+        rows.append(
+            {
+                "entity": entity,
+                "client_name": client_name.strip(),
+                "matter_name": matter_name.strip(),
+                "client_name_confidence": confidence,
+                "as_of_date": as_of,
+                "source_file": path.name,
+                "current_0_30": round(ws.cell(r, 5).value or 0.0, 2),
+                "days_31_60": round(ws.cell(r, 8).value or 0.0, 2),
+                "days_61_90": round(ws.cell(r, 9).value or 0.0, 2),
+                "days_91_120": round(ws.cell(r, 10).value or 0.0, 2),
+                "over_120": round(ws.cell(r, 12).value or 0.0, 2),
+                "balance": round(ws.cell(r, 15).value or 0.0, 2),
+            }
+        )
+
+    if final_totals:
+        computed = {c: round(sum(r.get(c, 0.0) for r in rows), 2) for c in config.AGING_BUCKETS + ["balance"]}
+        mismatches = {
+            c: (computed[c], final_totals.get(c))
+            for c in computed
+            if abs(computed[c] - final_totals.get(c, 0)) > 0.02
+        }
+        if mismatches:
+            logger.warning("Parsed totals don't reconcile to the report's Final Totals: %s", mismatches)
+        else:
+            logger.info("Parsed totals reconcile exactly to the report's Final Totals line.")
+
+    logger.info("Parsed %d client/matter AR rows from %s", len(rows), path.name)
+    return rows, final_totals
+
+
 def parse(paths: list[Path] | None = None) -> tuple[list[dict], dict | None]:
-    """Parses every matching "All AR Report" PDF in data/raw/, not just the
-    newest -- each carries its own "Aged as of" date (the as_of_date
+    """Parses every matching "All AR Report" export in data/raw/, not just
+    the newest -- each carries its own "Aged as of" date (the as_of_date
     column), so dropping several weeks' worth of exports in at once
-    backfills real history rather than only ever holding one snapshot."""
-    paths = paths or find_all_files(config.RAW_DATA_DIR, config.SOURCE_FILE_PATTERNS["ar_detail"])
-    if not paths:
+    backfills real history rather than only ever holding one snapshot.
+
+    .xlsx exports are preferred over .pdf: if both happen to cover the
+    same "Aged as of" date, the (more reliable) .xlsx one wins and that
+    date's .pdf is skipped rather than parsed twice.
+    """
+    if paths is not None:
+        # Explicit paths (e.g. tests) -- split by extension, no preference logic.
+        xlsx_paths = [p for p in paths if p.suffix.lower() == ".xlsx"]
+        pdf_paths = [p for p in paths if p.suffix.lower() == ".pdf"]
+    else:
+        xlsx_paths = find_all_files(config.RAW_DATA_DIR, config.SOURCE_FILE_PATTERNS["ar_detail_xlsx"])
+        pdf_paths = find_all_files(config.RAW_DATA_DIR, config.SOURCE_FILE_PATTERNS["ar_detail_pdf"])
+
+    if not xlsx_paths and not pdf_paths:
         logger.warning(
-            "No 'All AR Report' PDF found in %s -- skipping. Client-level AR "
-            "rollups (weekly Summary/Priority Board/Client Rollup) will be "
+            "No 'All AR Report' export found in %s -- skipping. Client-level "
+            "AR rollups (weekly Summary/Priority Board/Client Rollup) will be "
             "unavailable until one is added.",
             config.RAW_DATA_DIR,
         )
         return [], None
+
     all_rows: list[dict] = []
     last_final_totals = None
-    for path in paths:
-        rows, final_totals = _parse_one(path)
+    xlsx_dates: set = set()
+    for path in xlsx_paths:
+        rows, final_totals = _parse_one_xlsx(path)
+        all_rows.extend(rows)
+        xlsx_dates.update(r["as_of_date"] for r in rows if r["as_of_date"] is not None)
+        last_final_totals = final_totals
+
+    for path in pdf_paths:
+        rows, final_totals = _parse_one_pdf(path)
+        if rows and rows[0]["as_of_date"] in xlsx_dates:
+            logger.info(
+                "Skipping %s -- a more reliable .xlsx export already covers %s",
+                path.name,
+                rows[0]["as_of_date"],
+            )
+            continue
         all_rows.extend(rows)
         last_final_totals = final_totals
+
     return all_rows, last_final_totals
 
 

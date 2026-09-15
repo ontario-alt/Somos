@@ -81,8 +81,21 @@ def _section_cash_position():
 _PRIORITY_ORDER = {"Red": 0, "Yellow": 1, "Green": 2}
 
 
-def _ar_detail_df() -> pd.DataFrame:
+def _ar_detail_dates() -> list:
+    """Every distinct "Aged as of" snapshot loaded, newest first. Plain
+    date objects, not pandas Timestamps -- those print a "00:00:00"
+    suffix wherever a date lands directly in a label."""
+    df = query("SELECT DISTINCT as_of_date FROM ar_aging_detail ORDER BY as_of_date DESC")
+    return [d.date() if hasattr(d, "date") else d for d in df["as_of_date"]]
+
+
+def _ar_detail_df(as_of_date=None) -> pd.DataFrame:
+    """Matter-level AR detail for one snapshot. Filters to a single
+    as_of_date -- without this, loading multiple weekly snapshots (the
+    whole point of accumulating history) would double-count every KPI
+    and table on this page by summing across weeks instead of picking one."""
     threshold = config.AR_RED_THRESHOLD
+    where = "WHERE as_of_date = ?" if as_of_date else "WHERE as_of_date = (SELECT MAX(as_of_date) FROM ar_aging_detail)"
     return query(
         f"""
         SELECT
@@ -103,7 +116,9 @@ def _ar_detail_df() -> pd.DataFrame:
                 ELSE 'Green'
             END AS priority
         FROM ar_aging_detail
-        """
+        {where}
+        """,
+        [as_of_date] if as_of_date else None,
     )
 
 
@@ -115,12 +130,18 @@ def _section_ar_aging():
             "client rollup below -- see etl/parse_ar_detail.py)"
         )
         return
-    df = _ar_detail_df()
+    dates = _ar_detail_dates()
+    df = _ar_detail_df(dates[0] if dates else None)
     if df.empty:
         st.info("No AR detail rows available.")
         return
     as_of = df["as_of_date"].dropna().iloc[0] if df["as_of_date"].notna().any() else None
-    st.caption(f"Aged as of {as_of}" if as_of else "")
+    as_of_display = as_of.date() if hasattr(as_of, "date") else as_of
+    n_dates = len(dates)
+    st.caption(
+        f"Aged as of {as_of_display}"
+        + (f" ({n_dates} snapshots loaded -- see Week over Week below)" if n_dates > 1 else "")
+    )
 
     total = df["balance"].sum()
     current = df["current_0_30"].sum()
@@ -257,7 +278,8 @@ def _section_ar_aging():
     with st.expander(f"Matter-level detail ({len(df)} matters, sorted by priority then balance)"):
         detail = df.assign(_rank=df["priority"].map(_PRIORITY_ORDER)).sort_values(["_rank", "balance"], ascending=[True, False])
         low_confidence = query(
-            "SELECT COUNT(*) AS n FROM ar_aging_detail WHERE client_name_confidence != 'ok'"
+            "SELECT COUNT(*) AS n FROM ar_aging_detail WHERE as_of_date = ? AND client_name_confidence != 'ok'",
+            [as_of],
         ).iloc[0]["n"]
         if low_confidence:
             st.caption(
@@ -283,11 +305,86 @@ def _section_ar_aging():
             },
         )
 
+    st.markdown("**Week over Week**")
+    if len(dates) < 2:
+        st.info(
+            f"Only {len(dates)} snapshot loaded -- needs a second week's \"All AR Report\" to "
+            "compare against. Run `python etl/build_warehouse.py` against each week's export as "
+            "it comes in (or drop several past weeks in at once) and this fills in."
+        )
+    else:
+        _section_week_over_week(dates[0], dates[1])
+
+
+def _section_week_over_week(current_date, prior_date):
+    current = _ar_detail_df(current_date)
+    prior = _ar_detail_df(prior_date)
+
+    cur_total, prior_total = current["balance"].sum(), prior["balance"].sum()
+    cur_over90, prior_over90 = current["over_90"].sum(), prior["over_90"].sum()
+    cur_red, prior_red = (current["priority"] == "Red").sum(), (prior["priority"] == "Red").sum()
+
+    kpi_row(
+        [
+            {"label": f"Total AR -- {prior_date}", "value": fmt_currency(prior_total, short=True), "help": fmt_currency(prior_total)},
+            {"label": f"Total AR -- {current_date}", "value": fmt_currency(cur_total, short=True), "help": fmt_currency(cur_total)},
+            {
+                "label": "Change",
+                "value": fmt_currency(cur_total - prior_total, short=True),
+                "delta": fmt_pct((cur_total - prior_total) / prior_total * 100) if prior_total else None,
+            },
+            {"label": "Over 90 -- Change", "value": fmt_currency(cur_over90 - prior_over90, short=True)},
+            {"label": "Red Matters", "value": f"{prior_red} → {cur_red}"},
+        ]
+    )
+
+    st.markdown("**Bucket Movement**")
+    buckets = ["current_0_30", "days_31_60", "days_61_90", "days_91_120", "over_120"]
+    bucket_labels = {"current_0_30": "Current", "days_31_60": "31-60", "days_61_90": "61-90", "days_91_120": "91-120", "over_120": "Over 120"}
+    move = pd.DataFrame(
+        [
+            {
+                "Bucket": bucket_labels[b],
+                str(prior_date): prior[b].sum(),
+                str(current_date): current[b].sum(),
+            }
+            for b in buckets
+        ]
+    )
+    move["Change"] = move[str(current_date)] - move[str(prior_date)]
+    st.dataframe(
+        move,
+        use_container_width=True,
+        hide_index=True,
+        column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in [str(prior_date), str(current_date), "Change"]},
+    )
+
+    st.markdown("**Priority Movement**")
+    def _priority_snapshot(d: pd.DataFrame) -> pd.DataFrame:
+        return d.groupby("priority").agg(matters=("matter_name", "count"), balance=("balance", "sum")).reindex(["Red", "Yellow", "Green"]).fillna(0)
+
+    p_prior, p_cur = _priority_snapshot(prior), _priority_snapshot(current)
+    pm = pd.DataFrame(
+        {
+            f"Matters {prior_date}": p_prior["matters"],
+            f"Matters {current_date}": p_cur["matters"],
+            f"Balance {prior_date}": p_prior["balance"],
+            f"Balance {current_date}": p_cur["balance"],
+        }
+    ).reset_index().rename(columns={"priority": "Priority"})
+    st.dataframe(
+        pm,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            c: st.column_config.NumberColumn(format="$%,.0f") for c in pm.columns if c.startswith("Balance")
+        },
+    )
     st.caption(
-        "Week-over-week movement (bucket shifts, priority changes, new/cleared matters) needs "
-        "several weekly ar_aging_detail snapshots accumulated over time -- only one is loaded "
-        "currently. Run `python etl/build_warehouse.py` against each week's export as it comes "
-        "in and this builds the same way the rest of the warehouse does."
+        f"Comparing {current_date} against the prior snapshot ({prior_date}). Matter-level "
+        "movement (new/cleared matters, which specific matters changed priority) isn't broken "
+        "out yet -- ask if you want that added; the bucket and priority totals above are "
+        "already real."
     )
 
 

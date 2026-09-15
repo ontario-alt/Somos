@@ -55,7 +55,18 @@ SOURCE_FILE_PATTERNS = {
     # Vantagepoint's "All AR Report" -- matter-level with an explicit
     # client field, unlike ar_aging above. Only seen as PDF so far;
     # ask for a CSV/Excel export if this pattern ever needs updating.
-    "ar_detail": ["*All*AR*Report*.pdf"],
+    # "All AR Report" -- prefer .xlsx (real cells) over .pdf (position-based
+    # column recovery) when both cover the same "Aged as of" date; see
+    # parse_ar_detail.py for how that preference is applied.
+    "ar_detail_xlsx": ["*All*AR*.xlsx", "*AR*All*Compan*.xlsx"],
+    "ar_detail_pdf": ["*All*AR*Report*.pdf"],
+    # Matter master list -- matter code, name, client, and an
+    # "Organization Name" field that doubles as a practice-group/
+    # department taxonomy (e.g. "LLC Planning", "LLP Legal").
+    "matter_list": ["*Matter*List*.xlsx"],
+    # Monthly billed-activity-by-client export (distinct from AR balance
+    # and from cash receipts -- see etl/parse_ar_summary.py).
+    "ar_summary": ["*AR*Summary*.csv", "*AR*Summary*.xlsx"],
 }
 
 # Red/Yellow/Green collections priority, matching the bookkeeping team's
@@ -75,6 +86,7 @@ AR_RED_THRESHOLD = 25_000.00
 ENTITIES = [
     "Somos Group LLC",
     "Somos Law Group LLP",
+    "Somos Group Mexico",
 ]
 
 # The AR aging export has no entity/company column, only a matter code
@@ -84,6 +96,7 @@ ENTITIES = [
 MATTER_CODE_ENTITY_PREFIXES = {
     "LLC": "Somos Group LLC",
     "LLP": "Somos Law Group LLP",
+    "MEX": "Somos Group Mexico",
 }
 
 # The AP export's "Liability Code" and "Voucher BankCode" columns are
