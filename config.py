@@ -82,6 +82,11 @@ SOURCE_FILE_PATTERNS = {
     # the regular AR aging book. See parse_gbnf.py: deliberately its own
     # table, never merged into ar_aging_detail's "oldest"/Over 120 totals.
     "gbnf": ["*GBNF*.xlsx"],
+    # Per-employee, per-entity hours for the current measuring period
+    # (fiscal year) -- see parse_timekeeper_hours.py. Scoped to "All
+    # Timekeepers Hours" specifically so it doesn't also pick up the
+    # separate (non-entity-split) "Timekeeper Hours Summary" export.
+    "timekeeper_hours": ["*All*Timekeepers*Hours*.csv"],
     # Monthly billed-activity-by-client export (distinct from AR balance
     # and from cash receipts -- see etl/parse_ar_summary.py).
     "ar_summary": ["*AR*Summary*.csv", "*AR*Summary*.xlsx"],

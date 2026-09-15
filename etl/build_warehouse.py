@@ -52,6 +52,7 @@ from etl import (
     parse_matter_list,
     parse_originations,
     parse_receipts,
+    parse_timekeeper_hours,
     parse_wip,
 )
 
@@ -223,6 +224,11 @@ def build(snapshot_date: date | None = None) -> Path:
     parse_originations.write_processed(origination_rows, origination_flagged)
     _create_table(con, "originations", origination_rows, snapshot_date)
     _create_table(con, "originations_flagged", origination_flagged, snapshot_date)
+
+    # --- Timekeeper hours (measuring period, per entity) -----------------
+    tk_hours_rows = parse_timekeeper_hours.parse()
+    parse_timekeeper_hours.write_processed(tk_hours_rows)
+    _create_table(con, "timekeeper_hours", tk_hours_rows, snapshot_date, snapshot_date_col="period_end")
 
     con.close()
     logger.info("Warehouse build complete -> %s", config.WAREHOUSE_PATH)
