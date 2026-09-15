@@ -272,13 +272,9 @@ def _section_timekeeper():
         return
 
     has_cost = table_exists("employee_cost_rates")
-    cost_join = (
-        """
-        LEFT JOIN employee_cost_rates c ON e.employee_name = c.wip_name
-        """
-        if has_cost
-        else ""
-    )
+    has_targets = has_cost and table_exists("employee_targets")
+
+    cost_join = "LEFT JOIN employee_cost_rates c ON e.employee_name = c.wip_name" if has_cost else ""
     cost_select = (
         """
             c.job_cost_type,
@@ -291,6 +287,9 @@ def _section_timekeeper():
         if has_cost
         else ""
     )
+    target_join = "LEFT JOIN employee_targets t ON c.employee_number = t.employee_number" if has_targets else ""
+    target_select = "t.target_type," if has_targets else ""
+
     df = query(
         f"""
         WITH e AS (
@@ -300,7 +299,11 @@ def _section_timekeeper():
             -- combining hours/billing across companies first means a salaried
             -- employee's monthly cost gets applied once, not once per entity
             -- they happened to log time against.
-            SELECT employee_name, SUM(hours) AS hours, SUM(billing_amount) AS billing_amount
+            SELECT
+                employee_name,
+                SUM(hours) AS hours,
+                SUM(billing_amount) AS billing_amount,
+                SUM(CASE WHEN billing_status = 'B' THEN hours ELSE 0 END) AS billable_hours
             FROM wip_transactions
             WHERE employee_name IS NOT NULL
             GROUP BY employee_name
@@ -309,9 +312,12 @@ def _section_timekeeper():
             e.employee_name,
             e.hours,
             e.billing_amount,
+            e.billable_hours,
             {cost_select}
+            {target_select}
         FROM e
         {cost_join}
+        {target_join}
         ORDER BY e.billing_amount DESC
         """
     )
@@ -333,8 +339,35 @@ def _section_timekeeper():
         rename["margin"] = "Margin"
         money_cols += ["Cost", "Margin"]
 
+    if has_targets:
+        span = query(
+            "SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi FROM wip_transactions WHERE billing_status = 'B'"
+        ).iloc[0]
+        days_span = max((span["hi"] - span["lo"]).days + 1, 1) if span["lo"] is not None else 30
+        credit = config.BILLABLE_HOUR_CREDIT if config.EMPLOYEE_TARGETS_CREDIT_REDUCES_TARGET else 0
+
+        def _prorated_target(target_type):
+            if not target_type or target_type not in config.BILLABLE_HOUR_TARGETS:
+                return None
+            annual = config.BILLABLE_HOUR_TARGETS[target_type] - credit
+            return annual * (days_span / 365.0)
+
+        target_hours = pd.to_numeric(df["target_type"].map(_prorated_target), errors="coerce")
+        utilization_pct = (df["billable_hours"] / target_hours * 100).round(1)
+        # Formatted as strings rather than left as a numeric column with
+        # NumberColumn(format=...): when every row is NaN (no targets
+        # assigned yet, the common case until reference/employee_targets.csv
+        # is filled in), Streamlit's NumberColumn renders the literal text
+        # "None" instead of a blank cell -- this sidesteps that entirely.
+        df["target_hours"] = target_hours.map(lambda v: "--" if pd.isna(v) else f"{v:.1f}")
+        df["utilization_pct"] = utilization_pct.map(lambda v: "--" if pd.isna(v) else f"{v:.1f}%")
+        rename["target_hours"] = "Target Hours (period)"
+        rename["utilization_pct"] = "Utilization %"
+
     df = df.rename(columns=rename)
     display_cols = ["Timekeeper", "Hours", "Billing Value"] + (["Cost", "Margin"] if has_cost else []) + ["Effective Rate ($/hr)"]
+    if has_targets:
+        display_cols += ["Target Hours (period)", "Utilization %"]
     st.dataframe(
         df[display_cols],
         use_container_width=True,
@@ -344,10 +377,12 @@ def _section_timekeeper():
             "Hours": st.column_config.NumberColumn(format="%.1f"),
         },
     )
+
+    captions = []
     if has_cost:
         n_unmatched = df["Cost"].isna().sum()
         total_billing, total_cost = df["Billing Value"].sum(), df["Cost"].sum(skipna=True)
-        st.caption(
+        captions.append(
             "Cost/Margin from the Employee Cost Rate Details export: hourly staff cost "
             "hours x their rate, salaried staff cost their full monthly rate regardless of "
             "hours logged (that's how salary cost actually works, not an approximation) -- "
@@ -355,18 +390,33 @@ def _section_timekeeper():
             "full month's cost, and firm-wide cost can exceed billing value in a given month "
             f"({fmt_currency(total_cost)} cost vs. {fmt_currency(total_billing)} billing here) "
             "without that meaning the firm is unprofitable -- WIP only captures billable "
-            "client work, not the rest of what salaried staff are paid for. "
-            + (f"{n_unmatched} timekeeper(s) didn't match a cost record (name format or not "
-               "in the cost export) and show no cost/margin. " if n_unmatched else "")
-            + "Utilization and realization still need a capacity/target-hours figure and a "
-            "billed-vs-worked source -- neither is available yet."
+            "client work, not the rest of what salaried staff are paid for."
+            + (f" {n_unmatched} timekeeper(s) didn't match a cost record (name format or not "
+               "in the cost export) and show no cost/margin." if n_unmatched else "")
         )
     else:
-        st.caption(
-            "Utilization and realization require a timekeeper capacity/target-hours figure and "
-            "a distinct billed-vs-worked source (the earnings export) -- neither is available yet. "
-            "Cost/Margin need the Employee Cost Rate Details export -- also not available yet."
+        captions.append(
+            "Cost/Margin need the Employee Cost Rate Details export -- not available yet."
         )
+    if has_targets:
+        n_no_target = (df["Target Hours (period)"] == "--").sum()
+        captions.append(
+            f"Utilization = billable hours (billing_status = 'B') / target hours, target hours "
+            f"prorated to the {days_span}-day span of billable WIP currently loaded (annual "
+            f"target x {days_span}/365) -- not a monthly or YTD figure yet, since the warehouse "
+            f"only holds one WIP period today. Targets and who's exempt come from "
+            f"reference/employee_targets.csv (edit that file directly, then re-run "
+            f"build_warehouse.py). {n_no_target} timekeeper(s) shown have no target assigned in "
+            f"that file (blank = intentionally exempt, e.g. executives/admin/consultants)."
+        )
+    else:
+        captions.append(
+            "Utilization needs reference/employee_targets.csv (a starter is generated "
+            "automatically the first time build_warehouse.py runs with employee cost data "
+            "loaded -- fill in each employee's target_type and re-run) plus a billed-vs-worked "
+            "source for realization, which is still missing."
+        )
+    st.caption(" ".join(captions))
 
 
 def _section_exceptions():

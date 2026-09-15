@@ -168,6 +168,39 @@ AGING_BUCKETS = ["current_0_30", "days_31_60", "days_61_90", "days_91_120", "ove
 AGING_FLAG_THRESHOLDS = (90, 120)  # days -- weekly page flags new items crossing these
 
 # ---------------------------------------------------------------------------
+# Billable hour targets, for real utilization (actual billable hours vs.
+# what's expected of that timekeeper) instead of raw activity. Update
+# these two numbers once -- everywhere utilization is shown recalculates.
+#
+# BILLABLE_HOUR_CREDIT is a flat number of hours credited toward the
+# target regardless of what's actually billed (e.g. CLE, firm
+# administration) -- current assumption is that it *reduces* how many
+# hours a timekeeper actually needs to bill (target - credit), not that
+# it's added on top. Confirm this against the firm's actual hours policy
+# once it's available and adjust EMPLOYEE_TARGETS_CREDIT_REDUCES_TARGET
+# below if the policy works the other way.
+# ---------------------------------------------------------------------------
+BILLABLE_HOUR_TARGETS = {
+    "LLC": 1600,
+    "LLP": 1900,
+}
+BILLABLE_HOUR_CREDIT = 75
+EMPLOYEE_TARGETS_CREDIT_REDUCES_TARGET = True
+
+# Not every employee has a billable-hour target (executives, admin team
+# members, consultants/contractors typically don't). Rather than
+# guessing who's exempt, reference/employee_targets.csv is a plain,
+# hand-maintained file -- one row per employee, a `target_type` column
+# that's one of BILLABLE_HOUR_TARGETS' keys ("LLC"/"LLP") or blank for
+# no target. (Not "config/" -- that would collide with this file,
+# config.py, as a package name.) etl/parse_employee_targets.py
+# auto-generates a starter version (every employee currently in
+# employee_cost_rates, target_type blank) the first time it's needed if
+# the file doesn't exist yet -- fill it in and re-run
+# build_warehouse.py; it won't be overwritten once it exists.
+EMPLOYEE_TARGETS_PATH = Path(__file__).parent / "reference" / "employee_targets.csv"
+
+# ---------------------------------------------------------------------------
 # Targets (fill in as the firm sets them; used by the Measuring Period page)
 # ---------------------------------------------------------------------------
 ORIGINATION_TARGETS = {

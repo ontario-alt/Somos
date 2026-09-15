@@ -44,6 +44,7 @@ from etl import (
     parse_ar_summary,
     parse_earnings,
     parse_employee_cost,
+    parse_employee_targets,
     parse_gl,
     parse_matter_earnings,
     parse_matter_list,
@@ -58,7 +59,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 # snapshot (e.g. no AR comments this period) -- pandas would otherwise
 # infer an ambiguous dtype from all-NaN data and DuckDB could pick the
 # wrong column type. Force these to string explicitly.
-_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no", "client_name_confidence"}
+_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no", "client_name_confidence", "target_type"}
 
 
 def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
@@ -181,6 +182,11 @@ def build(snapshot_date: date | None = None) -> Path:
     cost_rows = parse_employee_cost.parse()
     parse_employee_cost.write_processed(cost_rows)
     _create_table(con, "employee_cost_rates", cost_rows, snapshot_date)
+
+    # --- Employee billable-hour targets (hand-maintained, see the file) ---
+    target_rows = parse_employee_targets.parse(cost_rows)
+    parse_employee_targets.write_processed(target_rows)
+    _create_table(con, "employee_targets", target_rows, snapshot_date)
 
     # --- Matter earnings (NTE-tracked matters only -- real revenue/profit) --
     matter_earnings_rows = parse_matter_earnings.parse()

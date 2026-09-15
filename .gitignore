@@ -8,6 +8,11 @@ data/processed/*
 !data/processed/.gitkeep
 *.duckdb
 
+# Real employee names -- hand-maintained locally (etl/parse_employee_targets.py
+# auto-generates a starter the first time build_warehouse.py runs if this
+# is missing, so nothing is lost by not committing it).
+reference/employee_targets.csv
+
 __pycache__/
 *.pyc
 .venv/

@@ -9,6 +9,7 @@ warehouse so charts don't re-parse raw exports on every run.
 ```
 data/raw/         <- points at your OneDrive-synced SharePoint folder (config.py)
 data/processed/   <- tidy, one-table-per-source CSVs (etl output, regenerated each run)
+reference/         employee_targets.csv = hand-maintained, not a Vantagepoint export (see below)
 etl/               parse_*.py  = one parser per Vantagepoint export
                    build_warehouse.py = combines tidy tables into data/processed/warehouse.duckdb
 dashboard/app.py   Streamlit entrypoint
@@ -16,6 +17,23 @@ dashboard/pages/   weekly.py, monthly.py, quarterly.py, measuring_period.py
 dashboard/charts/  reusable Plotly chart components
 config.py          paths, entity list, fiscal year, targets -- edit this, not the code
 ```
+
+## Billable-hour targets (utilization)
+
+`reference/employee_targets.csv` assigns each employee a `target_type`
+("LLC", "LLP", or blank for no target -- executives, admin, consultants
+typically have none). The annual target hours and credit for each type
+live in `config.py` (`BILLABLE_HOUR_TARGETS`, `BILLABLE_HOUR_CREDIT`) --
+change a number there and every utilization figure recalculates.
+
+The file isn't a Vantagepoint export -- nothing in Vantagepoint says
+who's exempt or which target type applies to whom, that's firm policy.
+If it doesn't exist yet, `python etl/build_warehouse.py` generates a
+starter with every current employee and `target_type` left blank; open
+it, fill in `target_type` for each row, and re-run. It's never
+regenerated once it exists, so your edits are safe across runs. It's
+also gitignored (real employee names), so this is a one-time local setup
+per machine, not something that comes from the repo.
 
 ## Monthly refresh (bookkeeping team)
 
