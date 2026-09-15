@@ -270,45 +270,103 @@ def _section_timekeeper():
     if not table_exists("wip_transactions"):
         missing_source("the WIP export")
         return
-    df = query(
+
+    has_cost = table_exists("employee_cost_rates")
+    cost_join = (
         """
+        LEFT JOIN employee_cost_rates c ON e.employee_name = c.wip_name
+        """
+        if has_cost
+        else ""
+    )
+    cost_select = (
+        """
+            c.job_cost_type,
+            CASE
+                WHEN c.job_cost_type = 'Salary' THEN c.job_cost_rate
+                WHEN c.job_cost_type = 'Hourly' THEN e.hours * c.job_cost_rate
+                ELSE NULL
+            END AS cost,
+        """
+        if has_cost
+        else ""
+    )
+    df = query(
+        f"""
+        WITH e AS (
+            -- Grouped by employee only, not (employee, company): cost rates
+            -- aren't genuinely entity-specific (verified against the sample --
+            -- same employee, same rate in both entities' exports), so
+            -- combining hours/billing across companies first means a salaried
+            -- employee's monthly cost gets applied once, not once per entity
+            -- they happened to log time against.
+            SELECT employee_name, SUM(hours) AS hours, SUM(billing_amount) AS billing_amount
+            FROM wip_transactions
+            WHERE employee_name IS NOT NULL
+            GROUP BY employee_name
+        )
         SELECT
-            employee_name,
-            SUM(hours) AS hours,
-            SUM(billing_amount) AS billing_amount
-        FROM wip_transactions
-        WHERE employee_name IS NOT NULL
-        GROUP BY employee_name
-        ORDER BY billing_amount DESC
+            e.employee_name,
+            e.hours,
+            e.billing_amount,
+            {cost_select}
+        FROM e
+        {cost_join}
+        ORDER BY e.billing_amount DESC
         """
     )
     if df.empty:
         st.info("No timekeeper data available.")
         return
     df["effective_rate"] = (df["billing_amount"] / df["hours"]).round(2)
-    df = df.rename(
-        columns={
-            "employee_name": "Timekeeper",
-            "hours": "Hours",
-            "billing_amount": "Billing Value",
-            "effective_rate": "Effective Rate ($/hr)",
-        }
-    )
+
+    rename = {
+        "employee_name": "Timekeeper",
+        "hours": "Hours",
+        "billing_amount": "Billing Value",
+        "effective_rate": "Effective Rate ($/hr)",
+    }
+    money_cols = ["Billing Value", "Effective Rate ($/hr)"]
+    if has_cost:
+        df["margin"] = df["billing_amount"] - df["cost"]
+        rename["cost"] = "Cost"
+        rename["margin"] = "Margin"
+        money_cols += ["Cost", "Margin"]
+
+    df = df.rename(columns=rename)
+    display_cols = ["Timekeeper", "Hours", "Billing Value"] + (["Cost", "Margin"] if has_cost else []) + ["Effective Rate ($/hr)"]
     st.dataframe(
-        df,
+        df[display_cols],
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Billing Value": st.column_config.NumberColumn(format="$%,.0f"),
+            **{c: st.column_config.NumberColumn(format="$%,.0f") for c in money_cols},
             "Hours": st.column_config.NumberColumn(format="%.1f"),
-            "Effective Rate ($/hr)": st.column_config.NumberColumn(format="$%,.0f"),
         },
     )
-    st.caption(
-        "Utilization and realization require a timekeeper capacity/target-hours figure and "
-        "a distinct billed-vs-worked source (the earnings export) -- neither is available yet, "
-        "so this shows raw activity only."
-    )
+    if has_cost:
+        n_unmatched = df["Cost"].isna().sum()
+        total_billing, total_cost = df["Billing Value"].sum(), df["Cost"].sum(skipna=True)
+        st.caption(
+            "Cost/Margin from the Employee Cost Rate Details export: hourly staff cost "
+            "hours x their rate, salaried staff cost their full monthly rate regardless of "
+            "hours logged (that's how salary cost actually works, not an approximation) -- "
+            "so a salaried timekeeper with little billable WIP this period still shows their "
+            "full month's cost, and firm-wide cost can exceed billing value in a given month "
+            f"({fmt_currency(total_cost)} cost vs. {fmt_currency(total_billing)} billing here) "
+            "without that meaning the firm is unprofitable -- WIP only captures billable "
+            "client work, not the rest of what salaried staff are paid for. "
+            + (f"{n_unmatched} timekeeper(s) didn't match a cost record (name format or not "
+               "in the cost export) and show no cost/margin. " if n_unmatched else "")
+            + "Utilization and realization still need a capacity/target-hours figure and a "
+            "billed-vs-worked source -- neither is available yet."
+        )
+    else:
+        st.caption(
+            "Utilization and realization require a timekeeper capacity/target-hours figure and "
+            "a distinct billed-vs-worked source (the earnings export) -- neither is available yet. "
+            "Cost/Margin need the Employee Cost Rate Details export -- also not available yet."
+        )
 
 
 def _section_exceptions():

@@ -69,7 +69,16 @@ SOURCE_FILE_PATTERNS = {
     # Monthly billed-activity-by-client export (distinct from AR balance
     # and from cash receipts -- see etl/parse_ar_summary.py).
     "ar_summary": ["*AR*Summary*.csv", "*AR*Summary*.xlsx"],
+    "employee_cost": ["*Employee*Cost*Rate*.xlsx"],
+    "nte_tracking": ["*NTE*Tracking*.xlsx"],
 }
+
+# The NTE Tracking Report only covers matters with a not-to-exceed cap
+# set (a "Records Selected" filter in Vantagepoint, confirmed: 42 of the
+# ~315 matters in the matter list) -- real revenue/profit data, but for
+# a subset of the portfolio, not the whole thing. Keep this in one place
+# so every page that surfaces matter_earnings can caption it consistently.
+MATTER_EARNINGS_IS_PARTIAL = True
 
 # Red/Yellow/Green collections priority, matching the bookkeeping team's
 # own weekly AR report: Red = an over-90 balance at or above this

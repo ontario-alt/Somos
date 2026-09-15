@@ -43,7 +43,9 @@ from etl import (
     parse_ar_detail,
     parse_ar_summary,
     parse_earnings,
+    parse_employee_cost,
     parse_gl,
+    parse_matter_earnings,
     parse_matter_list,
     parse_originations,
     parse_receipts,
@@ -174,6 +176,16 @@ def build(snapshot_date: date | None = None) -> Path:
     ar_summary_rows = parse_ar_summary.parse()
     parse_ar_summary.write_processed(ar_summary_rows)
     _create_table(con, "ar_summary_monthly", ar_summary_rows, snapshot_date, snapshot_date_col="month_date")
+
+    # --- Employee cost rates (real cost, not billing value at standard rate) ---
+    cost_rows = parse_employee_cost.parse()
+    parse_employee_cost.write_processed(cost_rows)
+    _create_table(con, "employee_cost_rates", cost_rows, snapshot_date)
+
+    # --- Matter earnings (NTE-tracked matters only -- real revenue/profit) --
+    matter_earnings_rows = parse_matter_earnings.parse()
+    parse_matter_earnings.write_processed(matter_earnings_rows)
+    _create_table(con, "matter_earnings", matter_earnings_rows, snapshot_date)
 
     # --- Matter master list (matter code -> client -> entity -> org) ----
     matter_rows = parse_matter_list.parse()

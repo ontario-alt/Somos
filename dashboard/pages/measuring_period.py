@@ -3,16 +3,22 @@ Measuring Period dashboard -- the fixed fiscal-year (10/1-9/30) window:
 FY revenue by entity, FY vs prior FY, originations pacing vs. target,
 practice-group profitability.
 
-FY revenue now uses real GL trial balance revenue by entity. The
-origination credit matrix (etl/parse_originations.py) gives real
+FY revenue now uses real GL trial balance revenue by entity.
+Practice-group profitability now uses real matter-level profit (the NTE
+Tracking Report, etl/parse_matter_earnings.py) joined to the matter
+list's practice-group taxonomy -- but that report only covers matters
+with a not-to-exceed cap set (42 of ~315 matters), so this is real data
+for a subset of the portfolio, not the whole thing; captioned as such.
+
+The origination credit matrix (etl/parse_originations.py) gives real
 originating-attorney credit fractions per matter, but dollarizing them
-needs a revenue figure joined by matter -- and the origination matrix's
-matter names don't reliably match AR/WIP matter names (checked: ~16%
-match rate against AR by exact-normalized name), so this page shows
-credit-fraction totals (matter counts, not dollars) rather than a
-fabricated target-vs-actual dollar chart. FY-vs-prior-FY needs a second
-fiscal year of history, and practice-group profitability needs a
-practice-group taxonomy (still not present in any source).
+needs a revenue figure joined by matter -- checked both bridges
+available: matching against AR by exact matter name (~16%) and against
+matter_earnings via the matter list (~6%, since matter_earnings itself
+only covers 42 matters) -- neither is reliable enough to trust, so this
+page still shows credit-fraction totals, not a fabricated dollar chart.
+
+FY-vs-prior-FY still needs a second fiscal year of history.
 """
 from __future__ import annotations
 
@@ -135,5 +141,52 @@ def _section_originations():
 
 
 def _section_practice_group_profitability():
-    st.subheader("Practice Group Profitability (FY-to-Date)")
-    missing_source("a practice-group taxonomy plus the GL trial balance / earnings exports for real cost and margin")
+    st.subheader("Practice Group Profitability")
+    if not (table_exists("matter_earnings") and table_exists("matter_list")):
+        missing_source("the NTE Tracking Report + matter list export (for the practice-group taxonomy)")
+        return
+    df = query(
+        """
+        SELECT
+            COALESCE(m.organization_name, 'Unmapped') AS practice_group,
+            COUNT(*) AS matters,
+            SUM(e.jtd_revenue) AS revenue,
+            SUM(e.jtd_profit) AS profit
+        FROM matter_earnings e
+        LEFT JOIN matter_list m ON e.matter_code = m.matter_code
+        GROUP BY practice_group
+        ORDER BY profit DESC
+        """
+    )
+    if df.empty:
+        st.info("No matter earnings data available.")
+        return
+    df["margin_pct"] = (df["profit"] / df["revenue"].replace(0, pd.NA)) * 100
+    st.dataframe(
+        df.rename(
+            columns={
+                "practice_group": "Practice Group", "matters": "Matters", "revenue": "JTD Revenue",
+                "profit": "JTD Profit", "margin_pct": "Margin %",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "JTD Revenue": st.column_config.NumberColumn(format="$%,.0f"),
+            "JTD Profit": st.column_config.NumberColumn(format="$%,.0f"),
+            "Margin %": st.column_config.NumberColumn(format="%.1f%%"),
+        },
+    )
+    match = query(
+        """
+        SELECT COUNT(*) AS total, COUNT(m.matter_code) AS matched
+        FROM matter_earnings e LEFT JOIN matter_list m ON e.matter_code = m.matter_code
+        """
+    ).iloc[0]
+    st.caption(
+        f"Real JTD revenue/profit, but only for the {int(match['total'])} matters the NTE "
+        f"Tracking Report covers (matters with a not-to-exceed cap set) -- not the full "
+        f"~315-matter portfolio, so this is directional for those practice groups, not a "
+        f"complete picture firm-wide. {match['matched']}/{match['total']} matched to a practice "
+        f"group by matter code; unmatched group as \"Unmapped\"."
+    )
