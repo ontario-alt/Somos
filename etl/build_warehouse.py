@@ -25,7 +25,7 @@ import duckdb
 import pandas as pd
 
 import config
-from etl import parse_ap, parse_ar, parse_earnings, parse_gl, parse_originations, parse_receipts, parse_wip
+from etl import parse_ap, parse_ar, parse_ar_detail, parse_earnings, parse_gl, parse_originations, parse_receipts, parse_wip
 
 logger = logging.getLogger("somos.etl.warehouse")
 
@@ -33,7 +33,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 # snapshot (e.g. no AR comments this period) -- pandas would otherwise
 # infer an ambiguous dtype from all-NaN data and DuckDB could pick the
 # wrong column type. Force these to string explicitly.
-_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no"}
+_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no", "client_name_confidence"}
 
 
 def _create_table(con: duckdb.DuckDBPyConnection, table: str, rows: list[dict], snapshot_date: date):
@@ -66,6 +66,11 @@ def build(snapshot_date: date | None = None) -> Path:
         _create_table(con, "ar_aging", ar_rows, snapshot_date)
     except FileNotFoundError as e:
         logger.warning(str(e))
+
+    # --- AR detail (client-level, from the "All AR Report" export) ----
+    ar_detail_rows, _ = parse_ar_detail.parse()
+    parse_ar_detail.write_processed(ar_detail_rows)
+    _create_table(con, "ar_aging_detail", ar_detail_rows, snapshot_date)
 
     # --- WIP ----------------------------------------------------------
     try:

@@ -52,7 +52,18 @@ SOURCE_FILE_PATTERNS = {
     "cash_receipts": ["*Receipts*.csv", "*Receipts*.xlsx"],
     "cash_disbursements": ["*Disbursements*.csv", "*Disbursements*.xlsx"],
     "originations": ["*Origination*.xlsx", "*Origination*.csv"],
+    # Vantagepoint's "All AR Report" -- matter-level with an explicit
+    # client field, unlike ar_aging above. Only seen as PDF so far;
+    # ask for a CSV/Excel export if this pattern ever needs updating.
+    "ar_detail": ["*All*AR*Report*.pdf"],
 }
+
+# Red/Yellow/Green collections priority, matching the bookkeeping team's
+# own weekly AR report: Red = an over-90 balance at or above this
+# threshold; Yellow = aged past 60 days but below it; Green = nothing
+# aged past 60 days. Single input -- every weekly AR view recalculates
+# from this.
+AR_RED_THRESHOLD = 25_000.00
 
 # ---------------------------------------------------------------------------
 # Entities (billing companies within the Somos Group family)

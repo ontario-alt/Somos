@@ -51,6 +51,7 @@ same command either way; the weekly page just reads whatever's newest.
 | Source | Status |
 |---|---|
 | AR aging | Parsed (nested tree reconstruction verified against sample -- reconciles to the export's own TOTALS row) |
+| AR detail (client-level) | Parsed (`etl/parse_ar_detail.py`) from Vantagepoint's "All AR Report" PDF -- matter-level with an explicit client field, which the AR aging export above doesn't have. Column values recovered by matching each number's x-position to the header's column positions (blank cells are absent, not "0.00"). Reconciles exactly to the source's own Final Totals line. Backs the weekly AR page's Summary/Priority/Client Rollup views. Only a PDF sample seen so far -- ask for CSV/Excel if this ever needs updating, since PDF layout parsing is inherently more fragile. |
 | WIP / unbilled | Parsed (same verification; also produces a matter-level rollup table) |
 | AP aging | Parsed (`etl/parse_ap.py`) from the AP export's own voucher/payment lines -- open balance is netted per invoice since the source has no explicit paid/open flag. Reconciles: 35 open invoices out of 165 total in the sample. |
 | GL trial balance | Parsed (`etl/parse_gl.py`) -- flat, one row per account; account type (Asset/Liability/Equity/Revenue/COGS/Expense) derived from the leading digit of the account number. Reconciles exactly to the source's own subtotal rows. Reads *every* file matching the pattern, not just the newest, since Vantagepoint runs trial balances per entity. |
