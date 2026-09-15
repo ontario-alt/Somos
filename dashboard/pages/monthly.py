@@ -39,6 +39,9 @@ def render():
     _section_kpis()
     st.divider()
 
+    _section_invoiced_by_month()
+    st.divider()
+
     col1, col2 = st.columns([2, 3])
     with col1:
         _section_ar_by_entity()
@@ -65,13 +68,37 @@ def render():
 
 
 def _section_kpis():
-    # ar_aging_detail (the "All AR Report" / Somos AR Aging workbook
-    # source), not ar_aging (a static invoice-level CSV that was never
-    # refreshed): verified the two disagreed by ~$692K on the same date,
-    # almost entirely ($647K) in the Over-120 bucket, and most of that gap
-    # ($653K) matches client names now confirmed as GBNF -- old
-    # collectibles the firm already tracks separately. ar_aging_detail is
-    # the one that's actually current and already excludes them.
+    wip_total = query("SELECT COALESCE(SUM(wip_amount), 0) AS v FROM wip_by_matter").iloc[0]["v"] if table_exists("wip_by_matter") else None
+
+    # Invoiced current/prior month + a prior-month-to-date figure so
+    # "current month so far" has something apples-to-apples to compare
+    # against, not just the prior month's full total.
+    invoiced = _invoiced_kpis()
+
+    kpi_row(
+        [
+            {"label": "Total WIP", "value": fmt_currency(wip_total) if wip_total is not None else "--"},
+            {"label": f"Invoiced -- {invoiced['current_label']} (MTD)" if invoiced else "Invoiced -- This Month", "value": fmt_currency(invoiced["current_mtd"]) if invoiced else "--"},
+            {"label": f"Invoiced -- {invoiced['prior_label']} (Full)" if invoiced else "Invoiced -- Last Month", "value": fmt_currency(invoiced["prior_full"]) if invoiced else "--"},
+            {
+                "label": f"Invoiced -- {invoiced['prior_label']} (thru day {invoiced['day']})" if invoiced else "Invoiced -- Last Month MTD",
+                "value": fmt_currency(invoiced["prior_mtd_est"]) if invoiced else "--",
+                "help": "Estimated by prorating the prior month's full total by day-of-month -- "
+                        "not real daily invoice data yet. See the caption below." if invoiced else None,
+            },
+        ]
+    )
+    if invoiced:
+        st.caption(
+            f"\"{invoiced['current_label']} (MTD)\" is whatever the AR Summary export's current-month "
+            f"total was as of its own pull date (day {invoiced['day']} of the month). The matching "
+            f"prior-month figure is an estimate -- prior month's full total × (day {invoiced['day']} / "
+            f"{invoiced['prior_days']} days in {invoiced['prior_label']}) -- not real day-by-day invoice "
+            "data, since only a current-month invoice register has been provided so far. Upload a prior "
+            "month's dated invoice register to replace this with an exact figure."
+        )
+
+    st.markdown("##### AR Position")
     has_ar = table_exists("ar_aging_detail")
     latest_ar = (
         query(
@@ -85,13 +112,11 @@ def _section_kpis():
     )
     ar_total = latest_ar["total"] if has_ar else None
     over_90 = latest_ar["over_90"] if has_ar else None
-    wip_total = query("SELECT COALESCE(SUM(wip_amount), 0) AS v FROM wip_by_matter").iloc[0]["v"] if table_exists("wip_by_matter") else None
     matter_count = query("SELECT COUNT(*) AS v FROM wip_by_matter").iloc[0]["v"] if table_exists("wip_by_matter") else None
 
     kpi_row(
         [
-            {"label": "Total AR", "value": fmt_currency(ar_total) if ar_total is not None else "--"},
-            {"label": "Total WIP", "value": fmt_currency(wip_total) if wip_total is not None else "--"},
+            {"label": "Total AR Outstanding", "value": fmt_currency(ar_total) if ar_total is not None else "--"},
             {"label": "AR 90+ days", "value": fmt_currency(over_90) if over_90 is not None else "--"},
             {"label": "Active matters (WIP)", "value": f"{matter_count:,.0f}" if matter_count is not None else "--"},
         ]
@@ -99,10 +124,82 @@ def _section_kpis():
     if has_ar and table_exists("gbnf_ar_aging"):
         gbnf_total = query("SELECT COALESCE(SUM(balance), 0) AS v FROM gbnf_ar_aging").iloc[0]["v"]
         st.caption(
-            f"Total AR excludes {fmt_currency(gbnf_total)} in GBNF (Gone But Not Forgotten) "
-            "collectibles, tracked separately -- see the Weekly page. GBNF is never counted "
-            "toward the regular aging book's Over 120 / oldest totals."
+            f"A point-in-time balance, not this month's activity -- see Invoiced above for that. "
+            f"Excludes {fmt_currency(gbnf_total)} in GBNF (Gone But Not Forgotten) collectibles, "
+            "tracked separately on the Weekly page."
         )
+
+
+def _invoiced_kpis() -> dict | None:
+    if not table_exists("ar_summary_monthly"):
+        return None
+    as_of = query("SELECT MAX(as_of_date) AS v FROM ar_aging_detail").iloc[0]["v"] if table_exists("ar_aging_detail") else None
+    as_of = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.today()
+    current_month = pd.Timestamp(as_of.year, as_of.month, 1)
+    prior_month = current_month - pd.DateOffset(months=1)
+
+    totals = query(
+        "SELECT month_date, SUM(amount) AS v FROM ar_summary_monthly WHERE month_date IN (?, ?) GROUP BY month_date",
+        [current_month.date(), prior_month.date()],
+    ).set_index("month_date")["v"]
+    current_mtd = totals.get(current_month, 0.0)
+    prior_full = totals.get(prior_month, 0.0)
+
+    prior_days = pd.Period(prior_month, freq="M").days_in_month
+    day = min(as_of.day, prior_days)
+    prior_mtd_est = prior_full * day / prior_days if prior_days else None
+
+    return {
+        "current_label": current_month.strftime("%b %Y"),
+        "prior_label": prior_month.strftime("%b %Y"),
+        "current_mtd": current_mtd,
+        "prior_full": prior_full,
+        "prior_mtd_est": prior_mtd_est,
+        "day": day,
+        "prior_days": prior_days,
+    }
+
+
+def _section_invoiced_by_month():
+    st.subheader("Total Invoiced by Month")
+    if not table_exists("ar_summary_monthly"):
+        missing_source("the AR Summary export (monthly billed activity by client)")
+        return
+    df = query(
+        """
+        SELECT month_date, entity, SUM(amount) AS invoiced
+        FROM ar_summary_monthly
+        WHERE month_date <= date_trunc('month', CURRENT_DATE)
+        GROUP BY month_date, entity
+        ORDER BY month_date, entity
+        """
+    )
+    if df.empty:
+        st.info("No AR Summary data available.")
+        return
+    df["month"] = df["month_date"].map(_month_label)
+    month_order = df.drop_duplicates("month").sort_values("month_date")["month"].tolist()
+    fig = stacked_column_by_series(
+        df, x_col="month", y_col="invoiced", series_col="entity", title=None, show_values=True,
+        color_map=_ENTITY_COLORS,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    pivot = df.pivot_table(index="month", columns="entity", values="invoiced", aggfunc="sum", fill_value=0)
+    pivot = pivot.reindex(month_order)
+    pivot["Total"] = pivot.sum(axis=1)
+    st.dataframe(
+        pivot.reset_index().rename(columns={"month": "Month"}),
+        use_container_width=True,
+        hide_index=True,
+        column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in pivot.columns},
+    )
+    st.caption(
+        "New billed activity by month -- distinct from the AR Position above, which is a "
+        f"point-in-time outstanding balance. The current month ({month_order[-1]}) is a running "
+        "total through the export's own pull date, not a final month-end figure -- it'll keep "
+        "growing until the month closes."
+    )
 
 
 def _section_ar_by_entity():
