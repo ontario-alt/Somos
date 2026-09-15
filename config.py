@@ -59,7 +59,17 @@ SOURCE_FILE_PATTERNS = {
 # ad hoc from whatever happens to be in the current export.
 ENTITIES = [
     "Somos Group LLC",
+    "Somos Law Group LLP",
 ]
+
+# The AR aging export has no entity/company column, only a matter code
+# (e.g. "LLC25-002", "LLP26-086"). The prefix matches the WIP export's
+# company field, so parse_ar.py derives entity from it. Update this map
+# if a new matter-code prefix / entity shows up.
+MATTER_CODE_ENTITY_PREFIXES = {
+    "LLC": "Somos Group LLC",
+    "LLP": "Somos Law Group LLP",
+}
 
 # ---------------------------------------------------------------------------
 # Fiscal year

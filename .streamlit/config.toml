@@ -1,0 +1,11 @@
+# dashboard/pages/ is a plain module package the app imports explicitly
+# (see dashboard/app.py), not Streamlit's auto-discovered multipage
+# folder -- the name collision is coincidental (it matches the file
+# layout requested for this project). Disable the automatic sidebar
+# page nav Streamlit generates from that folder so our own radio-based
+# nav in app.py is the only navigation shown.
+[client]
+showSidebarNavigation = false
+
+[theme]
+base = "light"

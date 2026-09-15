@@ -33,7 +33,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 # snapshot (e.g. no AR comments this period) -- pandas would otherwise
 # infer an ambiguous dtype from all-NaN data and DuckDB could pick the
 # wrong column type. Force these to string explicitly.
-_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number"}
+_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity"}
 
 
 def _create_table(con: duckdb.DuckDBPyConnection, table: str, rows: list[dict], snapshot_date: date):

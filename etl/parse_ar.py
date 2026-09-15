@@ -46,6 +46,16 @@ RAW_COLUMNS = [
 ]
 
 _MATTER_CODE_RE = re.compile(r"^([A-Z]{2,4}\d{2,4}-\d{2,4})\s+(.*)$")
+_MATTER_PREFIX_RE = re.compile(r"^[A-Z]+")
+
+
+def _entity_for_matter_code(matter_code: str | None) -> str | None:
+    if not matter_code:
+        return None
+    m = _MATTER_PREFIX_RE.match(matter_code)
+    if not m:
+        return None
+    return config.MATTER_CODE_ENTITY_PREFIXES.get(m.group(0))
 
 
 def _load_rows(path: Path) -> list[dict]:
@@ -96,6 +106,7 @@ def parse(path: Path | None = None) -> list[dict]:
             {
                 "matter_code": matter_code,
                 "matter_name": matter_name,
+                "entity": _entity_for_matter_code(matter_code),
                 "invoice_number": r.get("invoice_number"),
                 "invoice_date": parse_vp_date(r.get("invoice_date")),
                 "line_amount": parse_money(r.get("total_amount")),
