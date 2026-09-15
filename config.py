@@ -48,7 +48,9 @@ SOURCE_FILE_PATTERNS = {
     # Vantagepoint trial balances are run per entity, so a real refresh
     # will likely have one file per entity matching this pattern --
     # parse_gl.py reads all matches, not just the newest.
-    "gl_trial_balance": ["*Trial*Balance*.csv", "*Trial*Balance*.xlsx"],
+    # Same report, two names seen in practice: "Trial Balance" and
+    # "GL Report" (the latter is this firm's saved-favorite name for it).
+    "gl_trial_balance": ["*Trial*Balance*.csv", "*Trial*Balance*.xlsx", "*GL*Report*.xlsx", "*GL*Report*.csv"],
     "cash_receipts": ["*Receipts*.csv", "*Receipts*.xlsx"],
     "cash_disbursements": ["*Disbursements*.csv", "*Disbursements*.xlsx"],
     "originations": ["*Origination*.xlsx", "*Origination*.csv"],
