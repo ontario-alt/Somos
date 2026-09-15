@@ -33,7 +33,7 @@ def render():
 def _section_cash_position():
     st.subheader("Cash Position")
     if not table_exists("cash_receipts"):
-        missing_source("Cash Position", "cash receipts")
+        missing_source("the cash receipts export")
         return
     collected = query("SELECT COALESCE(SUM(-amount), 0) AS v FROM cash_receipts").iloc[0]["v"]
     kpi_row(
@@ -52,7 +52,7 @@ def _section_cash_position():
 def _section_ar_aging():
     st.subheader("AR Aging")
     if not table_exists("ar_aging"):
-        missing_source("AR Aging", "AR aging")
+        missing_source("the AR aging export")
         return
     df = query(
         f"""
@@ -84,13 +84,13 @@ def _section_ar_aging():
 
 def _section_ap_aging():
     st.subheader("AP Aging")
-    missing_source("AP Aging", "AP aging")
+    missing_source("the AP aging export")
 
 
 def _section_exceptions():
     st.subheader("Exceptions")
     if not table_exists("ar_aging"):
-        missing_source("Exceptions", "AR aging")
+        missing_source("the AR aging export")
         return
     df = query(
         """

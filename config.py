@@ -77,6 +77,19 @@ MATTER_CODE_ENTITY_PREFIXES = {
 FISCAL_YEAR_START_MONTH = 10  # October
 FISCAL_YEAR_START_DAY = 1
 
+
+def fiscal_year_bounds(as_of) -> tuple:
+    """(start, end) dates of the fiscal year containing `as_of`, per
+    FISCAL_YEAR_START_MONTH/DAY above. Used by the Measuring Period page."""
+    import datetime
+
+    fy_start_this_year = datetime.date(as_of.year, FISCAL_YEAR_START_MONTH, FISCAL_YEAR_START_DAY)
+    start = fy_start_this_year if as_of >= fy_start_this_year else datetime.date(
+        as_of.year - 1, FISCAL_YEAR_START_MONTH, FISCAL_YEAR_START_DAY
+    )
+    end = datetime.date(start.year + 1, FISCAL_YEAR_START_MONTH, FISCAL_YEAR_START_DAY) - datetime.timedelta(days=1)
+    return start, end
+
 # ---------------------------------------------------------------------------
 # AR aging bucket labels, oldest-last, matching column order in the
 # Vantagepoint AR aging export (column headers are rolling date ranges,

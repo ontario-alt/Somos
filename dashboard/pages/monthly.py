@@ -74,7 +74,7 @@ def _section_kpis():
 def _section_ar_by_entity():
     st.subheader("AR by Entity")
     if not table_exists("ar_aging"):
-        missing_source("AR by Entity", "AR aging")
+        missing_source("the AR aging export")
         return
     df = query(
         """
@@ -106,14 +106,14 @@ def _section_top_matters():
     metric = st.radio("Rank by", ["WIP", "AR"], horizontal=True, key="top_matters_metric")
     if metric == "WIP":
         if not table_exists("wip_by_matter"):
-            missing_source("Top Matters", "WIP")
+            missing_source("the WIP export")
             return
         df = query(
             "SELECT matter_name, SUM(wip_amount) AS value FROM wip_by_matter GROUP BY matter_name"
         )
     else:
         if not table_exists("ar_aging"):
-            missing_source("Top Matters", "AR aging")
+            missing_source("the AR aging export")
             return
         df = query(
             "SELECT matter_name, SUM(line_amount) AS value FROM ar_aging GROUP BY matter_name"
@@ -128,7 +128,7 @@ def _section_top_matters():
 def _section_wip_treemap():
     st.subheader("WIP Composition by Matter")
     if not table_exists("wip_by_matter"):
-        missing_source("WIP Composition", "WIP")
+        missing_source("the WIP export")
         return
     df = query(
         "SELECT client_name, matter_name, SUM(wip_amount) AS wip_amount FROM wip_by_matter GROUP BY client_name, matter_name"
@@ -144,7 +144,7 @@ def _section_wip_treemap():
 def _section_billable_hours():
     st.subheader("Billable Hours -- Annualized Projection")
     if not table_exists("wip_transactions"):
-        missing_source("Billable Hours", "WIP")
+        missing_source("the WIP export")
         return
     span = query(
         "SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi FROM wip_transactions WHERE billing_status = 'B'"
@@ -179,10 +179,7 @@ def _section_pl_summary():
     if table_exists("gl_trial_balance") and table_exists("earnings"):
         st.info("GL/earnings data present but P&L aggregation not yet wired up.")
         return
-    missing_source(
-        "P&L Summary (revenue, cost, margin by entity)",
-        "GL trial balance + project earnings & labor",
-    )
+    missing_source("the GL trial balance + project earnings & labor exports")
     st.caption(
         "WIP gives billing value at standard rate, not actual cost, so margin can't be "
         "computed from what's currently in the warehouse."
@@ -192,7 +189,7 @@ def _section_pl_summary():
 def _section_timekeeper():
     st.subheader("Timekeeper Activity")
     if not table_exists("wip_transactions"):
-        missing_source("Timekeeper Activity", "WIP")
+        missing_source("the WIP export")
         return
     df = query(
         """
@@ -238,7 +235,7 @@ def _section_timekeeper():
 def _section_exceptions():
     st.subheader("Exceptions & Action Items")
     if not table_exists("ar_aging"):
-        missing_source("Exceptions & Action Items", "AR aging")
+        missing_source("the AR aging export")
         return
     df = query(
         """
