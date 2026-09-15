@@ -1,10 +1,11 @@
 """
 Monthly dashboard -- the core report, rebuilding the existing WIP Report
-model. Panels blocked on AP aging / earnings / GL trial balance (not yet
-available) render a clearly-labeled placeholder instead of failing.
+model. Panels blocked on project earnings & labor (not yet available)
+render a clearly-labeled placeholder instead of failing.
 """
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 import config
@@ -12,7 +13,7 @@ from dashboard.charts.kpi_cards import kpi_row
 from dashboard.charts.placeholder import missing_source
 from dashboard.charts.ranked_bar import ranked_bar
 from dashboard.charts.stacked_column import stacked_column_by_series
-from dashboard.charts.theme import fmt_currency
+from dashboard.charts.theme import fmt_currency, fmt_pct
 from dashboard.charts.treemap import wip_treemap
 from dashboard.data import query, table_exists
 
@@ -176,14 +177,57 @@ def _section_billable_hours():
 
 def _section_pl_summary():
     st.subheader("P&L Summary")
-    if table_exists("gl_trial_balance") and table_exists("earnings"):
-        st.info("GL/earnings data present but P&L aggregation not yet wired up.")
+    if not table_exists("gl_trial_balance"):
+        missing_source("the GL trial balance export")
+        st.caption(
+            "WIP gives billing value at standard rate, not actual cost, so margin can't be "
+            "computed from what's currently in the warehouse."
+        )
         return
-    missing_source("the GL trial balance + project earnings & labor exports")
-    st.caption(
-        "WIP gives billing value at standard rate, not actual cost, so margin can't be "
-        "computed from what's currently in the warehouse."
+    df = query(
+        """
+        SELECT
+            entity,
+            -SUM(CASE WHEN account_type = 'Revenue' THEN closing_balance ELSE 0 END) AS revenue,
+            SUM(CASE WHEN account_type IN ('COGS', 'Expense') THEN closing_balance ELSE 0 END) AS cost
+        FROM gl_trial_balance
+        GROUP BY entity
+        ORDER BY entity
+        """
     )
+    if df.empty:
+        st.info("No GL data available.")
+        return
+    df["margin"] = df["revenue"] - df["cost"]
+    df["margin_pct"] = (df["margin"] / df["revenue"].replace(0, pd.NA)) * 100
+
+    kpi_row(
+        [
+            {"label": "Total Revenue", "value": fmt_currency(df["revenue"].sum())},
+            {"label": "Total Cost", "value": fmt_currency(df["cost"].sum())},
+            {
+                "label": "Margin",
+                "value": fmt_currency(df["margin"].sum()),
+                "delta": fmt_pct(df["margin"].sum() / df["revenue"].sum() * 100) if df["revenue"].sum() else None,
+            },
+        ]
+    )
+    out = df.rename(
+        columns={"entity": "Entity", "revenue": "Revenue", "cost": "Cost", "margin": "Margin", "margin_pct": "Margin %"}
+    )
+    st.dataframe(
+        out,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Revenue": st.column_config.NumberColumn(format="$%.0f"),
+            "Cost": st.column_config.NumberColumn(format="$%.0f"),
+            "Margin": st.column_config.NumberColumn(format="$%.0f"),
+            "Margin %": st.column_config.NumberColumn(format="%.1f%%"),
+        },
+    )
+    period = query("SELECT MIN(period_start) AS lo, MAX(period_end) AS hi FROM gl_trial_balance").iloc[0]
+    st.caption(f"GL period: {period['lo']} - {period['hi']}. Cost = COGS + Expense accounts (no separate COGS accounts seen in the sample chart of accounts).")
 
 
 def _section_timekeeper():

@@ -1,11 +1,13 @@
 """
 Weekly dashboard -- cash position, AR/AP aging, exceptions. Reuses the
-chart components built for the monthly page. AP aging and week-over-week
-trend/diffing are placeholders: AP aging has no sample export yet, and
-trend/diff views need multiple weekly snapshots accumulated in the
-warehouse over time (only one snapshot is loaded today).
+chart components built for the monthly page. Week-over-week trend/diff
+views are still placeholders: they need multiple weekly snapshots
+accumulated in the warehouse over time (only one snapshot is loaded
+today).
 """
 from __future__ import annotations
+
+import datetime
 
 import streamlit as st
 
@@ -32,20 +34,35 @@ def render():
 
 def _section_cash_position():
     st.subheader("Cash Position")
-    if not table_exists("cash_receipts"):
-        missing_source("the cash receipts export")
+    if not table_exists("cash_receipts") and not table_exists("cash_disbursements"):
+        missing_source("the cash receipts / disbursements exports")
         return
-    collected = query("SELECT COALESCE(SUM(-amount), 0) AS v FROM cash_receipts").iloc[0]["v"]
+    week_start = datetime.date.today() - datetime.timedelta(days=7)
+
+    collected = (
+        query("SELECT COALESCE(SUM(-amount), 0) AS v FROM cash_receipts WHERE receipt_date >= ?", [week_start]).iloc[0]["v"]
+        if table_exists("cash_receipts")
+        else None
+    )
+    disbursed = (
+        query("SELECT COALESCE(SUM(amount), 0) AS v FROM cash_disbursements WHERE check_date >= ?", [week_start]).iloc[0]["v"]
+        if table_exists("cash_disbursements")
+        else None
+    )
+    net = (collected or 0) - (disbursed or 0) if collected is not None and disbursed is not None else None
+
     kpi_row(
         [
-            {"label": "Cash collected (this period)", "value": fmt_currency(collected)},
-            {"label": "Cash disbursed (this period)", "value": "--", "help": "Needs a cash disbursements export -- not available yet."},
-            {"label": "Net cash flow", "value": "--", "help": "Needs disbursements to net against collections."},
+            {"label": "Cash collected (trailing 7 days)", "value": fmt_currency(collected) if collected is not None else "--"},
+            {"label": "Cash disbursed (trailing 7 days)", "value": fmt_currency(disbursed) if disbursed is not None else "--"},
+            {"label": "Net cash flow", "value": fmt_currency(net) if net is not None else "--"},
         ]
     )
     st.caption(
-        "Week-over-week trend line needs multiple weekly snapshots accumulated in the "
-        "warehouse over time -- only one receipts snapshot is loaded currently."
+        f"Trailing 7 days from {week_start} (AP export's payment lines double as the "
+        "disbursements source -- see etl/parse_ap.py). Week-over-week trend line needs "
+        "multiple weekly snapshots accumulated in the warehouse over time -- only one "
+        "snapshot of each source is loaded currently."
     )
 
 
@@ -84,7 +101,36 @@ def _section_ar_aging():
 
 def _section_ap_aging():
     st.subheader("AP Aging")
-    missing_source("the AP aging export")
+    if not table_exists("ap_aging"):
+        missing_source("the AP export")
+        return
+    df = query(
+        f"""
+        SELECT 'Total' AS grp, {', '.join(f'SUM({b}) AS {b}' for b in config.AGING_BUCKETS)}
+        FROM ap_aging
+        """
+    )
+    fig = aging_stacked_bar(df, group_col="grp")
+    st.plotly_chart(fig, use_container_width=True)
+
+    detail = query(
+        """
+        SELECT vendor_name, invoice_number, invoice_date, entity, balance
+        FROM ap_aging
+        ORDER BY balance DESC
+        """
+    )
+    st.dataframe(
+        detail,
+        use_container_width=True,
+        hide_index=True,
+        column_config={"balance": st.column_config.NumberColumn("Balance", format="$%.2f")},
+    )
+    st.caption(
+        "Open balance = net of each invoice's voucher and payment lines in the AP export "
+        "(no separate 'paid' flag in the source -- see etl/parse_ap.py). Aging bucket is "
+        "computed from invoice date to today, not carried from the source."
+    )
 
 
 def _section_exceptions():

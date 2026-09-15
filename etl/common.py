@@ -65,12 +65,22 @@ def parse_bool_checkbox(raw: str | None) -> bool:
     return (raw or "").strip().lower() == "checked"
 
 
-def find_latest_file(directory: Path, pattern: str) -> Path | None:
-    """Newest file (by mtime) in `directory` matching glob `pattern`."""
-    matches = [Path(p) for p in glob.glob(str(Path(directory) / pattern))]
-    if not matches:
-        return None
-    return max(matches, key=lambda p: p.stat().st_mtime)
+def find_all_files(directory: Path, pattern: str | list[str]) -> list[Path]:
+    """All files in `directory` matching one or more glob patterns
+    (a source may show up as .csv or .xlsx depending on how it was
+    exported), sorted oldest-to-newest by mtime, de-duplicated."""
+    patterns = [pattern] if isinstance(pattern, str) else pattern
+    seen: dict[Path, None] = {}
+    for pat in patterns:
+        for p in glob.glob(str(Path(directory) / pat)):
+            seen[Path(p)] = None
+    return sorted(seen.keys(), key=lambda p: p.stat().st_mtime)
+
+
+def find_latest_file(directory: Path, pattern: str | list[str]) -> Path | None:
+    """Newest file (by mtime) in `directory` matching glob `pattern`(s)."""
+    matches = find_all_files(directory, pattern)
+    return matches[-1] if matches else None
 
 
 class _StackEntry:

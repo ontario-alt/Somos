@@ -3,21 +3,27 @@ Measuring Period dashboard -- the fixed fiscal-year (10/1-9/30) window:
 FY revenue by entity, FY vs prior FY, originations pacing vs. target,
 practice-group profitability.
 
-FY revenue renders today as a WIP-value proxy (clearly captioned as such
--- real recognized revenue needs GL/earnings). The other three panels are
-hard-blocked: FY-vs-prior-FY needs a second fiscal year of history,
-originations needs an originating-attorney field no sample export has
-shown, and practice-group profitability needs both a practice-group
-taxonomy and real cost data.
+FY revenue now uses real GL trial balance revenue by entity. The
+origination credit matrix (etl/parse_originations.py) gives real
+originating-attorney credit fractions per matter, but dollarizing them
+needs a revenue figure joined by matter -- and the origination matrix's
+matter names don't reliably match AR/WIP matter names (checked: ~16%
+match rate against AR by exact-normalized name), so this page shows
+credit-fraction totals (matter counts, not dollars) rather than a
+fabricated target-vs-actual dollar chart. FY-vs-prior-FY needs a second
+fiscal year of history, and practice-group profitability needs a
+practice-group taxonomy (still not present in any source).
 """
 from __future__ import annotations
 
 import datetime
 
+import pandas as pd
 import streamlit as st
 
 import config
 from dashboard.charts.placeholder import missing_source
+from dashboard.charts.ranked_bar import ranked_bar
 from dashboard.charts.trend_line import trend_line
 from dashboard.data import query, table_exists
 
@@ -39,19 +45,20 @@ def render():
 
 def _section_fy_revenue(fy_start: datetime.date, fy_end: datetime.date):
     st.subheader("Fiscal-Year Revenue by Entity")
-    if not table_exists("wip_by_matter"):
-        missing_source("the GL trial balance / project earnings & labor export")
+    if not table_exists("gl_trial_balance"):
+        missing_source("the GL trial balance export")
         return
     df = query(
         """
-        SELECT snapshot_date, company AS entity, SUM(wip_amount) AS value
-        FROM wip_by_matter
-        GROUP BY snapshot_date, company
-        ORDER BY snapshot_date, company
+        SELECT snapshot_date, entity, -SUM(closing_balance) AS value
+        FROM gl_trial_balance
+        WHERE account_type = 'Revenue'
+        GROUP BY snapshot_date, entity
+        ORDER BY snapshot_date, entity
         """
     )
     if df.empty:
-        st.info("No WIP-by-entity data available.")
+        st.info("No GL revenue data available.")
         return
     fig = trend_line(
         df,
@@ -63,9 +70,9 @@ def _section_fy_revenue(fy_start: datetime.date, fy_end: datetime.date):
     )
     st.plotly_chart(fig, use_container_width=True)
     st.caption(
-        "Proxy: WIP billing value by entity, not recognized revenue -- needs the GL trial "
-        "balance / earnings export for the real figure. Shaded band marks the current fiscal "
-        "year window."
+        "Recognized revenue from the GL trial balance, by entity. One point per snapshot "
+        "today -- fills into a real within-FY trend as build_warehouse.py accumulates monthly "
+        "trial balance snapshots. Shaded band marks the current fiscal year window."
     )
 
 
@@ -89,19 +96,42 @@ def _section_fy_vs_prior_fy():
 
 
 def _section_originations():
-    st.subheader("Originations Tracking vs. Target")
-    if not config.ORIGINATION_TARGETS:
-        missing_source(
-            "an originating-attorney field per matter, plus targets in `config.ORIGINATION_TARGETS`",
-            remedy=(
-                "Chart component is ready (`dashboard/charts/grouped_bar.py::bar_with_target`) -- "
-                "needs an originating-attorney column (not present in AR, WIP, or receipts exports; "
-                "likely a Vantagepoint matter custom field) and targets filled into "
-                "`config.ORIGINATION_TARGETS`."
-            ),
-        )
+    st.subheader("Originations Tracking")
+    if not table_exists("originations"):
+        missing_source("the origination credit matrix export")
         return
-    st.info("Targets are configured but originating-attorney data isn't available to plot against them yet.")
+    df = query(
+        """
+        SELECT attorney, SUM(credit_fraction) AS matter_credits
+        FROM originations
+        GROUP BY attorney
+        ORDER BY matter_credits DESC
+        """
+    )
+    fig = ranked_bar(df, label_col="attorney", value_col="matter_credits", top_n=15, value_is_currency=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    if not config.ORIGINATION_TARGETS:
+        st.caption(
+            "Shown in matter-credits (sum of each attorney's credit fraction across matters), "
+            "not dollars -- dollarizing needs a revenue figure joined by matter, and the "
+            "origination matrix's matter names only match AR's ~16% of the time by exact "
+            "normalized name (checked directly), so a $ join here would silently misreport "
+            "most matters. Fix at the source: have the origination export carry the same "
+            "matter code AR/WIP use (e.g. \"LLC25-002\"), not just a free-text matter name. "
+            "`config.ORIGINATION_TARGETS` is also still empty. Once both are in place, "
+            "`dashboard/charts/grouped_bar.py::bar_with_target` renders actual-vs-target."
+        )
+    else:
+        st.caption(
+            "Targets are configured but originations still can't be dollarized -- see above. "
+            "Matter-credits shown instead."
+        )
+
+    flagged = query("SELECT status, COUNT(*) AS matters FROM originations_flagged GROUP BY status ORDER BY matters DESC") if table_exists("originations_flagged") else pd.DataFrame()
+    if not flagged.empty:
+        st.markdown("**Matters needing attention**")
+        st.dataframe(flagged, use_container_width=True, hide_index=True)
 
 
 def _section_practice_group_profitability():

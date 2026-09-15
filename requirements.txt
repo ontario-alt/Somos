@@ -2,3 +2,4 @@ streamlit>=1.63
 plotly>=7.0
 duckdb>=1.5
 pandas>=3.0
+openpyxl>=3.1

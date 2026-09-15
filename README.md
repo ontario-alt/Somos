@@ -52,10 +52,12 @@ same command either way; the weekly page just reads whatever's newest.
 |---|---|
 | AR aging | Parsed (nested tree reconstruction verified against sample -- reconciles to the export's own TOTALS row) |
 | WIP / unbilled | Parsed (same verification; also produces a matter-level rollup table) |
+| AP aging | Parsed (`etl/parse_ap.py`) from the AP export's own voucher/payment lines -- open balance is netted per invoice since the source has no explicit paid/open flag. Reconciles: 35 open invoices out of 165 total in the sample. |
+| GL trial balance | Parsed (`etl/parse_gl.py`) -- flat, one row per account; account type (Asset/Liability/Equity/Revenue/COGS/Expense) derived from the leading digit of the account number. Reconciles exactly to the source's own subtotal rows. Reads *every* file matching the pattern, not just the newest, since Vantagepoint runs trial balances per entity. |
 | Cash receipts | Parsed (supplementary weekly-page feed, not one of the 5 core sources) |
-| AP aging | **Stub** -- no sample export provided yet. Drop one in `data/raw/` and `etl/parse_ap.py` can be finished against its real columns. |
-| Project earnings & labor | **Stub** -- same as above. This is also the source needed for real cost/margin figures; WIP only carries hours and billing value at standard rate, not cost. |
-| GL trial balance | **Stub** -- same as above. Needed for a real P&L by entity. |
+| Cash disbursements | Parsed (`etl/parse_ap.py`) -- the AP export's payment lines ("AP Disb"/"Auto Check" rows with a Check Date) double as the disbursements source; no separate export needed. |
+| Origination credits | Parsed (`etl/parse_originations.py`) from the origination credit matrix -- one row per (matter, attorney, credit fraction). Gives real originating-attorney data, but dollarizing it against revenue needs a shared matter key: the matrix's free-text matter names only match AR's matter names ~16% of the time, so the Measuring Period page shows matter-credit totals, not fabricated dollar figures. Fix at the source by having the origination export carry the same matter code (e.g. "LLC25-002") that AR/WIP use. |
+| Project earnings & labor | **Stub** -- no sample export provided yet. This is the source needed for real timekeeper cost/utilization/realization; WIP only carries hours and billing value at standard rate, not cost or a billed-vs-worked distinction. |
 
 `etl/build_warehouse.py` skips any stubbed source with a warning rather
 than failing the whole build, so the warehouse always builds from

@@ -41,13 +41,17 @@ WAREHOUSE_PATH = Path(
 # matching its glob pattern rather than a fixed filename. Update these
 # patterns if the bookkeeping team's export naming convention changes.
 SOURCE_FILE_PATTERNS = {
-    "ar_aging": "*AR*Aging*.csv",
-    "ap_aging": "*AP*Aging*.csv",
-    "wip": "*WIP*.csv",
-    "earnings": "*Earnings*.csv",
-    "gl_trial_balance": "*Trial*Balance*.csv",
-    "cash_receipts": "*Receipts*.csv",
-    "cash_disbursements": "*Disbursements*.csv",
+    "ar_aging": ["*AR*Aging*.csv", "*AR*Aging*.xlsx"],
+    "ap_aging": ["*AP*Aging*.csv", "*AP*Aging*.xlsx", "*Accounts*Payable*.xlsx", "*Accounts*Payable*.csv"],
+    "wip": ["*WIP*.csv", "*WIP*.xlsx"],
+    "earnings": ["*Earnings*.csv", "*Earnings*.xlsx"],
+    # Vantagepoint trial balances are run per entity, so a real refresh
+    # will likely have one file per entity matching this pattern --
+    # parse_gl.py reads all matches, not just the newest.
+    "gl_trial_balance": ["*Trial*Balance*.csv", "*Trial*Balance*.xlsx"],
+    "cash_receipts": ["*Receipts*.csv", "*Receipts*.xlsx"],
+    "cash_disbursements": ["*Disbursements*.csv", "*Disbursements*.xlsx"],
+    "originations": ["*Origination*.xlsx", "*Origination*.csv"],
 }
 
 # ---------------------------------------------------------------------------
@@ -69,6 +73,35 @@ ENTITIES = [
 MATTER_CODE_ENTITY_PREFIXES = {
     "LLC": "Somos Group LLC",
     "LLP": "Somos Law Group LLP",
+}
+
+# The AP export's "Liability Code" and "Voucher BankCode" columns are
+# another entity signal (seen: "PWP-LLC"/"PWP-LLP", "LLC"/"LLP"/
+# "BILLLLC"/"BILLLLP") for rows where the matter code doesn't resolve
+# (payment lines have no matter; overhead vouchers use a placeholder
+# matter like "ZZZ00-100"). parse_ap.py checks matter code first, then
+# falls back to whichever of these contains "LLC" or "LLP".
+AP_ENTITY_CODE_SUFFIXES = {
+    "LLC": "Somos Group LLC",
+    "LLP": "Somos Law Group LLP",
+}
+
+# ---------------------------------------------------------------------------
+# GL account type, derived from the leading digit of the account number
+# (standard chart-of-accounts convention seen in the trial balance
+# export: 1=Asset, 2=Liability, 3=Equity, 4=Revenue, 5=COGS, 6-9=Expense).
+# Update if Somos's chart of accounts uses a different convention.
+# ---------------------------------------------------------------------------
+GL_ACCOUNT_TYPE_PREFIXES = {
+    "1": "Asset",
+    "2": "Liability",
+    "3": "Equity",
+    "4": "Revenue",
+    "5": "COGS",
+    "6": "Expense",
+    "7": "Expense",
+    "8": "Expense",
+    "9": "Expense",
 }
 
 # ---------------------------------------------------------------------------

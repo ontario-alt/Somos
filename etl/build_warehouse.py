@@ -4,8 +4,8 @@ Build the combined DuckDB warehouse from all parsed/tidy sources.
 Run this after the individual parsers (or just run this directly --
 it calls each parser itself, so `python etl/build_warehouse.py` is the
 one command the refresh workflow needs). Sources with no export available
-yet (AP aging, earnings, GL) are skipped with a warning rather than
-failing the whole build -- see the parse_*.py stubs for each.
+yet (project earnings & labor) are skipped with a warning rather than
+failing the whole build -- see parse_earnings.py.
 
 Every run replaces the warehouse tables (CREATE OR REPLACE) from the
 latest files in data/raw/, keyed by a `snapshot_date` column so monthly
@@ -25,7 +25,7 @@ import duckdb
 import pandas as pd
 
 import config
-from etl import parse_ap, parse_ar, parse_earnings, parse_gl, parse_receipts, parse_wip
+from etl import parse_ap, parse_ar, parse_earnings, parse_gl, parse_originations, parse_receipts, parse_wip
 
 logger = logging.getLogger("somos.etl.warehouse")
 
@@ -33,7 +33,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 # snapshot (e.g. no AR comments this period) -- pandas would otherwise
 # infer an ambiguous dtype from all-NaN data and DuckDB could pick the
 # wrong column type. Force these to string explicitly.
-_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity"}
+_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no"}
 
 
 def _create_table(con: duckdb.DuckDBPyConnection, table: str, rows: list[dict], snapshot_date: date):
@@ -84,20 +84,27 @@ def build(snapshot_date: date | None = None) -> Path:
     except FileNotFoundError as e:
         logger.warning(str(e))
 
-    # --- AP aging (stub until sample export provided) -----------------
-    ap_rows = parse_ap.parse()
-    parse_ap.write_processed(ap_rows)
+    # --- AP aging + cash disbursements (same source export) -----------
+    ap_rows, disbursement_rows = parse_ap.parse()
+    parse_ap.write_processed(ap_rows, disbursement_rows)
     _create_table(con, "ap_aging", ap_rows, snapshot_date)
+    _create_table(con, "cash_disbursements", disbursement_rows, snapshot_date)
 
     # --- Earnings & labor (stub until sample export provided) ---------
     earnings_rows = parse_earnings.parse()
     parse_earnings.write_processed(earnings_rows)
     _create_table(con, "earnings", earnings_rows, snapshot_date)
 
-    # --- GL trial balance (stub until sample export provided) ---------
+    # --- GL trial balance -----------------------------------------------
     gl_rows = parse_gl.parse()
     parse_gl.write_processed(gl_rows)
     _create_table(con, "gl_trial_balance", gl_rows, snapshot_date)
+
+    # --- Origination credits --------------------------------------------
+    origination_rows, origination_flagged = parse_originations.parse()
+    parse_originations.write_processed(origination_rows, origination_flagged)
+    _create_table(con, "originations", origination_rows, snapshot_date)
+    _create_table(con, "originations_flagged", origination_flagged, snapshot_date)
 
     con.close()
     logger.info("Warehouse build complete -> %s", config.WAREHOUSE_PATH)
