@@ -32,13 +32,14 @@ def render():
     st.title("Quarterly Report")
 
     n_snapshots = (
-        query("SELECT COUNT(DISTINCT snapshot_date) AS n FROM ar_aging").iloc[0]["n"]
-        if table_exists("ar_aging")
+        query("SELECT COUNT(DISTINCT as_of_date) AS n FROM ar_aging_detail").iloc[0]["n"]
+        if table_exists("ar_aging_detail")
         else 0
     )
     st.caption(
-        f"{n_snapshots} snapshot(s) in the warehouse. Trend panels below render one point per "
-        "snapshot -- run `python etl/build_warehouse.py` monthly to build up real trend lines."
+        f"{n_snapshots} AR snapshot(s) in the warehouse. Trend panels below render one point per "
+        "snapshot -- run `python etl/build_warehouse.py` as new exports arrive to build up real "
+        "trend lines."
     )
 
     _section_ar_trend()
@@ -58,24 +59,77 @@ def render():
 
 def _section_ar_trend():
     st.subheader("AR Trend by Entity")
-    if not table_exists("ar_aging"):
-        missing_source("the AR aging export")
+    # ar_aging_detail, not ar_aging: it's the source that's actually
+    # accumulating multiple real dates (ar_aging only ever holds the
+    # single newest snapshot -- see build_warehouse.py's docstring on
+    # "batch daily/weekly, one date per run" sources).
+    if not table_exists("ar_aging_detail"):
+        missing_source("the 'All AR Report' or Somos AR Aging workbook export")
         return
     df = query(
         """
-        SELECT snapshot_date, entity, SUM(line_amount) AS ar_amount
-        FROM ar_aging
+        SELECT as_of_date, entity, SUM(balance) AS ar_amount
+        FROM ar_aging_detail
         WHERE entity IS NOT NULL
-        GROUP BY snapshot_date, entity
-        ORDER BY snapshot_date, entity
+        GROUP BY as_of_date, entity
+        ORDER BY as_of_date, entity
         """
     )
     if df.empty:
         st.info("No AR rows with a resolved entity.")
         return
-    df["snapshot_date"] = df["snapshot_date"].astype(str)
-    fig = trend_line(df, x_col="snapshot_date", y_col="ar_amount", series_col="entity")
+    df["as_of_date"] = df["as_of_date"].astype(str)
+    fig = trend_line(df, x_col="as_of_date", y_col="ar_amount", series_col="entity", show_values=True)
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Total outstanding balance -- useful for spotting a growing or shrinking pile, but a "
+        "flat or rising line here can just mean old, aged receivables sitting unchanged rather "
+        "than new activity. See the aging composition trend below for whether the mix is "
+        "actually getting older or younger."
+    )
+
+    st.markdown("**AR Aging Composition Trend**")
+    bucket_cols = ["current_0_30", "days_31_60", "days_61_90", "days_91_120", "over_120"]
+    bucket_labels = {
+        "current_0_30": "Current (0-30)", "days_31_60": "31-60 days", "days_61_90": "61-90 days",
+        "days_91_120": "91-120 days", "over_120": "Over 120 days",
+    }
+    comp = query(
+        f"""
+        SELECT as_of_date, {', '.join(f'SUM({c}) AS {c}' for c in bucket_cols)}
+        FROM ar_aging_detail
+        GROUP BY as_of_date
+        ORDER BY as_of_date
+        """
+    )
+    if len(comp) < 2:
+        st.caption(
+            "Needs at least two AR aging snapshots to show a composition trend -- only one is "
+            "loaded today."
+        )
+    else:
+        comp["total"] = comp[bucket_cols].sum(axis=1)
+        long = comp.melt(id_vars=["as_of_date", "total"], value_vars=bucket_cols, var_name="bucket", value_name="amount")
+        long["pct"] = (long["amount"] / long["total"].replace(0, pd.NA) * 100).round(1)
+        long["bucket_label"] = long["bucket"].map(bucket_labels)
+        long["as_of_date"] = long["as_of_date"].astype(str)
+        # Old-to-new order so "Current" lands on top of the stack, reading
+        # top-down the same way the aging buckets read left-to-right elsewhere.
+        long["bucket_label"] = pd.Categorical(long["bucket_label"], categories=list(reversed(bucket_labels.values())), ordered=True)
+        long = long.sort_values(["bucket_label", "as_of_date"])
+        fig2 = stacked_area_by_series(long, x_col="as_of_date", y_col="pct", series_col="bucket_label", y_is_currency=False)
+        fig2.update_yaxes(ticksuffix="%", range=[0, 100])
+        st.plotly_chart(fig2, use_container_width=True)
+        current_share_trend = comp.set_index("as_of_date")["current_0_30"] / comp.set_index("as_of_date")["total"] * 100
+        delta = current_share_trend.iloc[-1] - current_share_trend.iloc[0]
+        direction = "improved (more current)" if delta > 0 else "worsened (more aged)" if delta < 0 else "held steady"
+        st.caption(
+            f"Share of total AR in each aging bucket, by snapshot -- the actionable read on "
+            f"whether collections are keeping pace, independent of whether the total balance "
+            f"itself is growing. Current (0-30 days) share has {direction} "
+            f"({current_share_trend.iloc[0]:.0f}% → {current_share_trend.iloc[-1]:.0f}%) "
+            f"across the {len(comp)} snapshots loaded."
+        )
 
 
 def _section_monthly_billings():
@@ -222,28 +276,33 @@ def _section_client_concentration():
 
 
 def _section_variance_by_entity():
-    st.subheader("Variance by Entity -- Current Year vs. Prior Year")
     n_years = (
-        query("SELECT COUNT(DISTINCT EXTRACT(YEAR FROM snapshot_date)) AS n FROM ar_aging").iloc[0]["n"]
-        if table_exists("ar_aging")
+        query("SELECT COUNT(DISTINCT EXTRACT(YEAR FROM as_of_date)) AS n FROM ar_aging_detail").iloc[0]["n"]
+        if table_exists("ar_aging_detail")
         else 0
     )
     if n_years < 2:
-        missing_source(
-            "a second fiscal year of warehouse history (only current-year snapshots are loaded)",
-            remedy=(
-                "Table component is ready (`dashboard/charts/variance_table.py::variance_table`) -- "
-                "wire it up once prior-year snapshots are in the warehouse."
-            ),
-        )
+        # Minimized rather than a full-width placeholder block: there's
+        # nothing actionable here until a prior fiscal year is loaded, so
+        # it shouldn't compete for attention with the panels above that
+        # already have real data. Collapsed by default -- opening it just
+        # explains what's blocking it, not a chart.
+        with st.expander("Variance by Entity -- Current Year vs. Prior Year (needs prior-year data)"):
+            st.caption(
+                "Not available yet -- only one fiscal year of AR snapshots is loaded. Drop last "
+                "fiscal year's archived AR exports into `data/raw/` and re-run "
+                "`python etl/build_warehouse.py` to unlock this. Table component is ready "
+                "(`dashboard/charts/variance_table.py::variance_table`)."
+            )
         return
+    st.subheader("Variance by Entity -- Current Year vs. Prior Year")
     df = query(
         """
         SELECT
             entity,
-            SUM(CASE WHEN EXTRACT(YEAR FROM snapshot_date) = (SELECT MAX(EXTRACT(YEAR FROM snapshot_date)) FROM ar_aging) THEN line_amount ELSE 0 END) AS current_year,
-            SUM(CASE WHEN EXTRACT(YEAR FROM snapshot_date) = (SELECT MAX(EXTRACT(YEAR FROM snapshot_date)) FROM ar_aging) - 1 THEN line_amount ELSE 0 END) AS prior_year
-        FROM ar_aging
+            SUM(CASE WHEN EXTRACT(YEAR FROM as_of_date) = (SELECT MAX(EXTRACT(YEAR FROM as_of_date)) FROM ar_aging_detail) THEN balance ELSE 0 END) AS current_year,
+            SUM(CASE WHEN EXTRACT(YEAR FROM as_of_date) = (SELECT MAX(EXTRACT(YEAR FROM as_of_date)) FROM ar_aging_detail) - 1 THEN balance ELSE 0 END) AS prior_year
+        FROM ar_aging_detail
         WHERE entity IS NOT NULL
         GROUP BY entity
         """

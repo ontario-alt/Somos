@@ -41,7 +41,19 @@ WAREHOUSE_PATH = Path(
 # matching its glob pattern rather than a fixed filename. Update these
 # patterns if the bookkeeping team's export naming convention changes.
 SOURCE_FILE_PATTERNS = {
-    "ar_aging": ["*AR*Aging*.csv", "*AR*Aging*.xlsx"],
+    # CSV only -- this is the raw Vantagepoint invoice-level export
+    # (parse_ar.py only reads CSV). The "Somos_AR_Aging_*.xlsx" workbook
+    # below matches "*AR*Aging*" too but is a different report entirely
+    # (ar_aging_workbook), so it's deliberately excluded here rather than
+    # risking parse_ar.py picking it as its "newest" file and choking on
+    # a binary xlsx read as CSV.
+    "ar_aging": ["*AR*Aging*.csv"],
+    # The hand-built multi-tab workbook (Summary / Week Over Week / AR
+    # Aging Detail / Priority Board / Client Rollup) that defined this
+    # app's own weekly AR page -- see parse_ar_aging_workbook.py. Scoped
+    # to the "Somos_AR_Aging_" naming so it doesn't collide with the
+    # ar_aging pattern above or with ar_detail's "All AR Report" exports.
+    "ar_aging_workbook": ["*Somos*AR*Aging*.xlsx"],
     "ap_aging": ["*AP*Aging*.csv", "*AP*Aging*.xlsx", "*Accounts*Payable*.xlsx", "*Accounts*Payable*.csv"],
     "wip": ["*WIP*.csv", "*WIP*.xlsx"],
     "earnings": ["*Earnings*.csv", "*Earnings*.xlsx"],

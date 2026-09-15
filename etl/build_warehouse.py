@@ -40,6 +40,7 @@ import config
 from etl import (
     parse_ap,
     parse_ar,
+    parse_ar_aging_workbook,
     parse_ar_detail,
     parse_ar_summary,
     parse_earnings,
@@ -131,6 +132,18 @@ def build(snapshot_date: date | None = None) -> Path:
     # once backfills real history instead of collapsing to one snapshot.
     ar_detail_rows, _ = parse_ar_detail.parse()
     parse_ar_detail.write_processed(ar_detail_rows)
+    covered_dates = {r["as_of_date"] for r in ar_detail_rows if r.get("as_of_date") is not None}
+
+    # Second, easier source for the same table: the hand-built
+    # "Somos_AR_Aging_*.xlsx" workbook (already has real Entity/Client/
+    # Matter columns, no PDF/string-splitting needed). Only added for
+    # dates the "All AR Report" export above doesn't already cover, so a
+    # date present in both isn't double-counted.
+    workbook_rows = parse_ar_aging_workbook.parse()
+    workbook_rows = [r for r in workbook_rows if r.get("as_of_date") not in covered_dates]
+    parse_ar_aging_workbook.write_processed(workbook_rows)
+    ar_detail_rows += workbook_rows
+
     _create_table(con, "ar_aging_detail", ar_detail_rows, snapshot_date, snapshot_date_col="as_of_date")
 
     # --- WIP ----------------------------------------------------------
