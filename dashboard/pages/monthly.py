@@ -13,12 +13,13 @@ from dashboard.charts.kpi_cards import kpi_row
 from dashboard.charts.placeholder import missing_source
 from dashboard.charts.ranked_bar import ranked_bar
 from dashboard.charts.stacked_column import stacked_column_by_series
-from dashboard.charts.theme import fmt_currency, fmt_pct, short_client_label
+from dashboard.charts.theme import entity_color_map, fmt_currency, fmt_pct, short_client_label
 from dashboard.charts.treemap import wip_treemap
 from dashboard.charts.trend_line import trend_line
 from dashboard.data import query, table_exists
 
 _ENTITY_ABBREV = {full: abbrev for abbrev, full in config.MATTER_CODE_ENTITY_PREFIXES.items()}
+_ENTITY_COLORS = entity_color_map(config.MATTER_CODE_ENTITY_PREFIXES)
 
 
 def _month_label(d) -> str:
@@ -38,7 +39,7 @@ def render():
     _section_kpis()
     st.divider()
 
-    col1, col2 = st.columns([3, 2])
+    col1, col2 = st.columns([2, 3])
     with col1:
         _section_ar_by_entity()
     with col2:
@@ -104,7 +105,8 @@ def _section_ar_by_entity():
         return
     df["month"] = df["snapshot_date"].map(_month_label)
     fig = stacked_column_by_series(
-        df, x_col="month", y_col="ar_amount", series_col="entity", title=None, show_values=True
+        df, x_col="month", y_col="ar_amount", series_col="entity", title=None, show_values=True,
+        color_map=_ENTITY_COLORS,
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -132,20 +134,51 @@ def _section_top_matters():
         if not table_exists("wip_by_matter"):
             missing_source("the WIP export")
             return
+        # Grouped by (company, client_name, matter_name), not matter_name
+        # alone: several unrelated clients can share a generic matter name
+        # like "General Real Estate" -- grouping by name only would sum
+        # their unrelated WIP into one phantom bar.
         df = query(
-            "SELECT matter_name, SUM(wip_amount) AS value FROM wip_by_matter GROUP BY matter_name"
+            """
+            SELECT company, client_name, matter_name, SUM(wip_amount) AS value
+            FROM wip_by_matter GROUP BY company, client_name, matter_name
+            """
         )
+        df["entity"] = df["company"]
     else:
         if not table_exists("ar_aging"):
             missing_source("the AR aging export")
             return
+        # Same risk here -- group by the real matter_code, not matter_name,
+        # since matter_name alone collides across matter_codes (verified:
+        # "General Real Estate" alone spans 11 distinct matter codes).
         df = query(
-            "SELECT matter_name, SUM(line_amount) AS value FROM ar_aging GROUP BY matter_name"
+            """
+            SELECT matter_code, matter_name, entity, SUM(line_amount) AS value
+            FROM ar_aging WHERE entity IS NOT NULL GROUP BY matter_code, matter_name, entity
+            """
         )
+        df["client_name"] = None
     if df.empty:
         st.info("No matter data available.")
         return
-    fig = ranked_bar(df, label_col="matter_name", value_col="value", top_n=10)
+
+    df["label"] = df.apply(
+        lambda r: f"{r['matter_name']} — {short_client_label(None, r['client_name'])}"
+        if r["client_name"]
+        else str(r["matter_name"]),
+        axis=1,
+    )
+    # matter_name (or matter_name + client) can still repeat if the same
+    # matter appears more than once in the source -- disambiguate so
+    # Plotly doesn't silently merge two different bars onto one row.
+    dupe = df["label"].duplicated(keep=False)
+    if dupe.any():
+        df.loc[dupe, "label"] = df.loc[dupe, "label"] + df.loc[dupe].groupby("label").cumcount().add(1).astype(str).radd(" #")
+
+    fig = ranked_bar(
+        df, label_col="label", value_col="value", series_col="entity", color_map=_ENTITY_COLORS, top_n=10
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -237,11 +270,12 @@ def _section_revenue_by_month():
         st.info("No GL revenue data available.")
         return
     df["month"] = df["snapshot_date"].map(_month_label)
-    fig = trend_line(df, x_col="month", y_col="revenue", series_col="entity", show_values=True)
+    month_order = df.drop_duplicates("month").sort_values("snapshot_date")["month"].tolist()
+    fig = trend_line(df, x_col="month", y_col="revenue", series_col="entity", show_values=True, x_order=month_order)
     st.plotly_chart(fig, use_container_width=True)
 
     pivot = df.pivot_table(index="month", columns="entity", values="revenue", aggfunc="sum", fill_value=0)
-    pivot = pivot.reindex(df.drop_duplicates("month").sort_values("snapshot_date")["month"])
+    pivot = pivot.reindex(month_order)
     pivot["Total"] = pivot.sum(axis=1)
     st.dataframe(
         pivot.reset_index().rename(columns={"month": "Month"}),

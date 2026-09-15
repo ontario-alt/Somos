@@ -27,21 +27,32 @@ def trend_line(
     shaded_band: tuple | None = None,
     shaded_band_label: str | None = None,
     show_values: bool = False,
+    x_order: list | None = None,
 ) -> go.Figure:
     """One line per series_col value (or a single unnamed line if
     series_col is None). shaded_band: (x0, x1) to highlight a fiscal-year
     window with a translucent rect behind the lines. show_values prints
     each point's own value above its marker -- useful once there are only
-    a handful of points, where a data label reads faster than a hover."""
+    a handful of points, where a data label reads faster than a hover.
+    x_order: explicit chronological order for x_col when x_col is a
+    display label (e.g. "Sep 2026") rather than something that already
+    sorts correctly as a string -- without it, points would be ordered
+    alphabetically by label instead of by time."""
     fig = go.Figure()
     hover_fmt = "%{y:$,.0f}" if y_is_currency else "%{y:,.1f}"
     text_fmt = "%{y:$,.0f}" if y_is_currency else "%{y:,.1f}"
     mode = "lines+markers+text" if show_values else "lines+markers"
+    rank = {v: i for i, v in enumerate(x_order)} if x_order else None
+
+    def _sorted(sub: pd.DataFrame) -> pd.DataFrame:
+        if rank:
+            return sub.assign(_k=sub[x_col].map(rank)).sort_values("_k").drop(columns="_k")
+        return sub.sort_values(x_col)
 
     if series_col:
         series_values = list(dict.fromkeys(df[series_col]))
         for i, series in enumerate(series_values):
-            sub = df[df[series_col] == series].sort_values(x_col)
+            sub = _sorted(df[df[series_col] == series])
             fig.add_trace(
                 go.Scatter(
                     name=str(series),
@@ -57,7 +68,7 @@ def trend_line(
                 )
             )
     else:
-        sub = df.sort_values(x_col)
+        sub = _sorted(df)
         fig.add_trace(
             go.Scatter(
                 x=sub[x_col],
@@ -90,4 +101,6 @@ def trend_line(
         # shaded_band is given -- that needs a real continuous date axis
         # for the highlighted range to mean anything.
         fig.update_xaxes(type="category")
+        if x_order:
+            fig.update_xaxes(categoryorder="array", categoryarray=x_order)
     return fig

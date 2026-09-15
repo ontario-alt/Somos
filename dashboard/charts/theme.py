@@ -121,6 +121,14 @@ _CORP_SUFFIX = re.compile(
 )
 
 
+def entity_color_map(entity_prefixes: dict) -> dict:
+    """Fixed color per full entity name, keyed off config.MATTER_CODE_ENTITY_PREFIXES
+    order (LLC, LLP, MEX, ...) so every chart on the app colors the same
+    entity the same way regardless of what order a given query happens to
+    return rows in."""
+    return {full: CATEGORICAL[i % len(CATEGORICAL)] for i, full in enumerate(entity_prefixes.values())}
+
+
 def short_client_label(entity_abbrev: str | None, client_name: str | None, max_len: int = 24) -> str:
     """"LLP: Fairplex Farms, LLC" -> "LLP: Fairplex Farms" -> "LLP: Fairplex" once
     truncated -- strips trailing corporate suffixes (repeatedly, some names

@@ -16,10 +16,13 @@ def stacked_column_by_series(
     title: str | None = None,
     y_is_currency: bool = True,
     show_values: bool = False,
+    color_map: dict | None = None,
 ) -> go.Figure:
     """One stacked column per x_col value, one series per series_col value.
     df must be long-form: one row per (x, series) pair. show_values prints
-    each segment's own value inside the bar."""
+    each segment's own value inside the bar. color_map pins specific
+    series values to specific colors (e.g. always color one entity the
+    same way on every chart) instead of coloring by first-seen order."""
     fig = go.Figure()
     series_values = list(dict.fromkeys(df[series_col]))  # stable order, first-seen
     hover_fmt = "%{y:$,.0f}" if y_is_currency else "%{y:,.0f}"
@@ -31,7 +34,7 @@ def stacked_column_by_series(
                 name=str(series),
                 x=sub[x_col],
                 y=sub[y_col],
-                marker_color=CATEGORICAL[i % len(CATEGORICAL)],
+                marker_color=(color_map or {}).get(series, CATEGORICAL[i % len(CATEGORICAL)]),
                 texttemplate=text_fmt if show_values else None,
                 textposition="inside" if show_values else None,
                 textfont=dict(size=10, color="#fcfcfb"),

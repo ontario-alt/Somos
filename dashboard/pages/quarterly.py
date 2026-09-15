@@ -15,11 +15,17 @@ from __future__ import annotations
 
 import streamlit as st
 
+import pandas as pd
+
 from dashboard.charts.placeholder import missing_source
 from dashboard.charts.stacked_area import stacked_area_by_series
 from dashboard.charts.trend_line import trend_line
 from dashboard.charts.variance_table import variance_table
 from dashboard.data import query, table_exists
+
+
+def _month_label(d) -> str:
+    return pd.Timestamp(d).strftime("%b %Y")
 
 
 def render():
@@ -89,10 +95,11 @@ def _section_monthly_billings():
     if df.empty:
         st.info("No AR Summary data available.")
         return
-    df["month_date"] = df["month_date"].astype(str)
-    fig = trend_line(df, x_col="month_date", y_col="billed", series_col="entity")
+    df["month"] = df["month_date"].map(_month_label)
+    month_order = df.drop_duplicates("month").sort_values("month_date")["month"].tolist()
+    fig = trend_line(df, x_col="month", y_col="billed", series_col="entity", show_values=True, x_order=month_order)
     st.plotly_chart(fig, use_container_width=True)
-    n_months = df["month_date"].nunique()
+    n_months = df["month"].nunique()
     st.caption(
         f"{n_months} month(s) of billed activity from the AR Summary export -- distinct from "
         "AR balance (a point-in-time snapshot, the chart above) and from cash receipts (money "
