@@ -13,10 +13,19 @@ from dashboard.charts.kpi_cards import kpi_row
 from dashboard.charts.placeholder import missing_source
 from dashboard.charts.ranked_bar import ranked_bar
 from dashboard.charts.stacked_column import stacked_column_by_series
-from dashboard.charts.theme import fmt_currency, fmt_pct
+from dashboard.charts.theme import fmt_currency, fmt_pct, short_client_label
 from dashboard.charts.treemap import wip_treemap
 from dashboard.charts.trend_line import trend_line
 from dashboard.data import query, table_exists
+
+_ENTITY_ABBREV = {full: abbrev for abbrev, full in config.MATTER_CODE_ENTITY_PREFIXES.items()}
+
+
+def _month_label(d) -> str:
+    """2026-09-01 -> "Sep 2026" -- reads as a period, not a raw date, on
+    every monthly-cadence chart/table on this page."""
+    ts = pd.Timestamp(d)
+    return ts.strftime("%b %Y")
 
 
 def render():
@@ -93,11 +102,21 @@ def _section_ar_by_entity():
     if df.empty:
         st.info("No AR rows with a resolved entity.")
         return
-    df["snapshot_date"] = df["snapshot_date"].astype(str)
+    df["month"] = df["snapshot_date"].map(_month_label)
     fig = stacked_column_by_series(
-        df, x_col="snapshot_date", y_col="ar_amount", series_col="entity", title=None
+        df, x_col="month", y_col="ar_amount", series_col="entity", title=None, show_values=True
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    pivot = df.pivot_table(index="month", columns="entity", values="ar_amount", aggfunc="sum", fill_value=0)
+    pivot = pivot.reindex(df.drop_duplicates("month").sort_values("snapshot_date")["month"])
+    pivot["Total"] = pivot.sum(axis=1)
+    st.dataframe(
+        pivot.reset_index().rename(columns={"month": "Month"}),
+        use_container_width=True,
+        hide_index=True,
+        column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in pivot.columns},
+    )
     ytd_total = df["ar_amount"].sum()
     st.caption(
         f"YTD total across shown snapshots: {fmt_currency(ytd_total)}. "
@@ -136,14 +155,34 @@ def _section_wip_treemap():
         missing_source("the WIP export")
         return
     df = query(
-        "SELECT client_name, matter_name, SUM(wip_amount) AS wip_amount FROM wip_by_matter GROUP BY client_name, matter_name"
+        "SELECT company, client_name, matter_name, SUM(wip_amount) AS wip_amount FROM wip_by_matter GROUP BY company, client_name, matter_name"
     )
     df = df[df["wip_amount"] > 0]
     if df.empty:
         st.info("No positive WIP balances to chart.")
         return
-    fig = wip_treemap(df, label_col="matter_name", value_col="wip_amount", parent_col=None)
+
+    df["client_label"] = df.apply(
+        lambda r: short_client_label(_ENTITY_ABBREV.get(r["company"], r["company"]), r["client_name"]), axis=1
+    )
+    df["matter_id"] = df["client_label"] + " > " + df["matter_name"].astype(str) + " #" + df.index.astype(str)
+
+    clients = df.groupby("client_label", as_index=False)["wip_amount"].sum()
+    clients["id"] = clients["client_label"]
+    clients["parent"] = ""
+    clients["label"] = clients["client_label"]
+
+    matters = df.rename(columns={"matter_id": "id", "matter_name": "label", "client_label": "parent"})[
+        ["id", "label", "parent", "wip_amount"]
+    ]
+
+    tree_df = pd.concat([clients[["id", "label", "parent", "wip_amount"]], matters], ignore_index=True)
+    fig = wip_treemap(tree_df, label_col="label", value_col="wip_amount", parent_col="parent", id_col="id")
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Grouped by client (entity: client, e.g. \"LLP: Fairplex\") -- click into a client's box "
+        "to see its individual matters, each sized by its own WIP balance."
+    )
 
 
 def _section_billable_hours():
@@ -197,10 +236,20 @@ def _section_revenue_by_month():
     if df.empty:
         st.info("No GL revenue data available.")
         return
-    df["snapshot_date"] = df["snapshot_date"].astype(str)
-    fig = trend_line(df, x_col="snapshot_date", y_col="revenue", series_col="entity")
+    df["month"] = df["snapshot_date"].map(_month_label)
+    fig = trend_line(df, x_col="month", y_col="revenue", series_col="entity", show_values=True)
     st.plotly_chart(fig, use_container_width=True)
-    n_months = df["snapshot_date"].nunique()
+
+    pivot = df.pivot_table(index="month", columns="entity", values="revenue", aggfunc="sum", fill_value=0)
+    pivot = pivot.reindex(df.drop_duplicates("month").sort_values("snapshot_date")["month"])
+    pivot["Total"] = pivot.sum(axis=1)
+    st.dataframe(
+        pivot.reset_index().rename(columns={"month": "Month"}),
+        use_container_width=True,
+        hide_index=True,
+        column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in pivot.columns},
+    )
+    n_months = df["month"].nunique()
     st.caption(
         f"{n_months} trial-balance period(s) loaded, one point per period_end date. Drop "
         "multiple months of GL trial balances into data/raw/ (Vantagepoint runs these per "

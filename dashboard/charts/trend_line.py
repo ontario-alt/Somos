@@ -26,12 +26,17 @@ def trend_line(
     y_is_currency: bool = True,
     shaded_band: tuple | None = None,
     shaded_band_label: str | None = None,
+    show_values: bool = False,
 ) -> go.Figure:
     """One line per series_col value (or a single unnamed line if
     series_col is None). shaded_band: (x0, x1) to highlight a fiscal-year
-    window with a translucent rect behind the lines."""
+    window with a translucent rect behind the lines. show_values prints
+    each point's own value above its marker -- useful once there are only
+    a handful of points, where a data label reads faster than a hover."""
     fig = go.Figure()
     hover_fmt = "%{y:$,.0f}" if y_is_currency else "%{y:,.1f}"
+    text_fmt = "%{y:$,.0f}" if y_is_currency else "%{y:,.1f}"
+    mode = "lines+markers+text" if show_values else "lines+markers"
 
     if series_col:
         series_values = list(dict.fromkeys(df[series_col]))
@@ -42,9 +47,12 @@ def trend_line(
                     name=str(series),
                     x=sub[x_col],
                     y=sub[y_col],
-                    mode="lines+markers",
+                    mode=mode,
                     line=dict(color=CATEGORICAL[i % len(CATEGORICAL)], width=2),
                     marker=dict(size=8),
+                    texttemplate=text_fmt if show_values else None,
+                    textposition="top center",
+                    textfont=dict(size=10, color=CATEGORICAL[i % len(CATEGORICAL)]),
                     hovertemplate=f"{series}: {hover_fmt}<extra></extra>",
                 )
             )
@@ -54,9 +62,12 @@ def trend_line(
             go.Scatter(
                 x=sub[x_col],
                 y=sub[y_col],
-                mode="lines+markers",
+                mode=mode,
                 line=dict(color=CATEGORICAL[0], width=2),
                 marker=dict(size=8),
+                texttemplate=text_fmt if show_values else None,
+                textposition="top center",
+                textfont=dict(size=10, color=CATEGORICAL[0]),
                 hovertemplate=hover_fmt + "<extra></extra>",
             )
         )

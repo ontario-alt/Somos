@@ -10,6 +10,8 @@ these hexes for Somos's brand palette later -- keep the *roles* the same.
 """
 from __future__ import annotations
 
+import re
+
 import plotly.graph_objects as go
 import plotly.io as pio
 
@@ -111,3 +113,24 @@ def fmt_pct(value: float | None, decimals: int = 0) -> str:
     if value is None:
         return "--"
     return f"{value:.{decimals}f}%"
+
+
+_CORP_SUFFIX = re.compile(
+    r",?\s*(LLC|LLP|L\.L\.C\.|L\.L\.P\.|L\.P\.|LP|Inc\.?|Incorporated|Ltd\.?|Corp\.?|Corporation|Co\.?)\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def short_client_label(entity_abbrev: str | None, client_name: str | None, max_len: int = 24) -> str:
+    """"LLP: Fairplex Farms, LLC" -> "LLP: Fairplex Farms" -> "LLP: Fairplex" once
+    truncated -- strips trailing corporate suffixes (repeatedly, some names
+    carry more than one) and caps length so treemap/table labels stay
+    scannable instead of wrapping."""
+    name = (client_name or "").strip()
+    prev = None
+    while prev != name:
+        prev = name
+        name = _CORP_SUFFIX.sub("", name).strip().rstrip(",")
+    if len(name) > max_len:
+        name = name[: max_len - 1].rstrip() + "…"
+    return f"{entity_abbrev}: {name}" if entity_abbrev else name

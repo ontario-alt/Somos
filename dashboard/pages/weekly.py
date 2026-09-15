@@ -70,12 +70,68 @@ def _section_cash_position():
             {"label": "Net cash flow", "value": fmt_currency(net) if net is not None else "--"},
         ]
     )
-    st.caption(
+
+    by_entity = None
+    unmapped_receipts = 0
+    if table_exists("cash_receipts") and table_exists("matter_list"):
+        recv_entity = query(
+            """
+            SELECT COALESCE(m.entity, 'Unmapped') AS entity, COALESCE(SUM(-r.amount), 0) AS collected
+            FROM cash_receipts r
+            LEFT JOIN (SELECT DISTINCT client_name, entity FROM matter_list) m
+                ON lower(trim(r.client_name)) = lower(trim(m.client_name))
+            WHERE r.receipt_date >= ?
+            GROUP BY 1
+            """,
+            [week_start],
+        )
+        unmapped_receipts = recv_entity.loc[recv_entity["entity"] == "Unmapped", "collected"].sum()
+        disb_entity = (
+            query(
+                """
+                SELECT COALESCE(entity, 'Unmapped') AS entity, COALESCE(SUM(amount), 0) AS disbursed
+                FROM cash_disbursements
+                WHERE check_date >= ?
+                GROUP BY 1
+                """,
+                [week_start],
+            )
+            if table_exists("cash_disbursements")
+            else pd.DataFrame(columns=["entity", "disbursed"])
+        )
+        by_entity = pd.merge(recv_entity, disb_entity, on="entity", how="outer").fillna(0)
+        by_entity = by_entity[by_entity["entity"] != "Unmapped"].sort_values("entity")
+        if unmapped_receipts:
+            by_entity = pd.concat(
+                [by_entity, pd.DataFrame([{"entity": "Unmapped", "collected": unmapped_receipts, "disbursed": 0}])],
+                ignore_index=True,
+            )
+        by_entity["net"] = by_entity["collected"] - by_entity["disbursed"]
+
+    if by_entity is not None and not by_entity.empty:
+        st.markdown("**By Entity**")
+        st.dataframe(
+            by_entity.rename(columns={"entity": "Entity", "collected": "Collected", "disbursed": "Disbursed", "net": "Net"}),
+            use_container_width=True,
+            hide_index=True,
+            column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in ["Collected", "Disbursed", "Net"]},
+        )
+
+    caption = (
         f"Trailing 7 days from {week_start} (AP export's payment lines double as the "
         "disbursements source -- see etl/parse_ap.py). Week-over-week trend line needs "
         "multiple weekly snapshots accumulated in the warehouse over time -- only one "
         "snapshot of each source is loaded currently."
     )
+    if by_entity is not None:
+        caption += (
+            " Receipts have no entity field of their own -- entity is resolved by matching "
+            "each receipt's client name to the matter list (exact match, case/whitespace "
+            "insensitive); disbursements carry entity directly from the AP export."
+        )
+        if unmapped_receipts:
+            caption += f" {fmt_currency(unmapped_receipts)} in receipts didn't match a client in the matter list and shows as Unmapped."
+    st.caption(caption)
 
 
 _PRIORITY_ORDER = {"Red": 0, "Yellow": 1, "Green": 2}
