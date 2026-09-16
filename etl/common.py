@@ -65,6 +65,18 @@ def parse_bool_checkbox(raw: str | None) -> bool:
     return (raw or "").strip().lower() == "checked"
 
 
+def normalize_join_key(*parts: str | None) -> str:
+    """Lowercase, punctuation-stripped, whitespace-collapsed key for
+    approximate joins across exports that share no numeric/code key --
+    e.g. bridging the origination matrix's free-text (client, matter)
+    names to the matter master's matter_code. Not a substitute for a
+    real shared key: two differently-worded names for the same matter
+    still won't match."""
+    joined = " ".join(p for p in parts if p)
+    joined = re.sub(r"[^a-z0-9]+", " ", joined.lower())
+    return " ".join(joined.split())
+
+
 def find_all_files(directory: Path, pattern: str | list[str]) -> list[Path]:
     """All files in `directory` matching one or more glob patterns
     (a source may show up as .csv or .xlsx depending on how it was

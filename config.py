@@ -227,3 +227,16 @@ EMPLOYEE_TARGETS_PATH = Path(__file__).parent / "reference" / "employee_targets.
 ORIGINATION_TARGETS = {
     # "Attorney Name": 500_000.00,
 }
+
+# Origination formula (see etl/build_originations_model.py for the real
+# implementation and the outstanding-data-needs list):
+#
+#   Origination_$(attorney, matter, year)
+#       = credit_fraction(attorney, matter) x Matter_Revenue(matter, year)
+#
+#   Attorney_Originations(attorney, year)
+#       = SUM over matter of Origination_$(attorney, matter, year)
+#
+# credit_fraction comes from the origination credit matrix (parse_originations.py).
+# Matter_Revenue(matter, year) has no reliable source yet -- see item 2 of
+# build_originations_model.OUTSTANDING_DATA_NEEDS.

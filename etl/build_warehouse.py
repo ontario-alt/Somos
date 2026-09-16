@@ -38,6 +38,7 @@ import pandas as pd
 
 import config
 from etl import (
+    build_originations_model,
     parse_ap,
     parse_ar,
     parse_ar_aging_workbook,
@@ -224,6 +225,20 @@ def build(snapshot_date: date | None = None) -> Path:
     parse_originations.write_processed(origination_rows, origination_flagged)
     _create_table(con, "originations", origination_rows, snapshot_date)
     _create_table(con, "originations_flagged", origination_flagged, snapshot_date)
+
+    # --- Originations model (project list by entity, % origination by
+    # matter, and the dollarized-where-possible matter/originator/year
+    # rollup -- see etl/build_originations_model.py for the formula and
+    # the outstanding-data-needs list) -------------------------------
+    project_list_rows = build_originations_model.build_project_list_by_entity(matter_rows)
+    origination_pct_rows = build_originations_model.build_origination_pct_by_matter(origination_rows)
+    origination_by_year_rows = build_originations_model.build_originations_by_matter_originator_year(
+        origination_rows, matter_rows, matter_earnings_rows, snapshot_date.year
+    )
+    build_originations_model.write_processed(project_list_rows, origination_pct_rows, origination_by_year_rows)
+    _create_table(con, "project_list_by_entity", project_list_rows, snapshot_date)
+    _create_table(con, "originations_pct_by_matter", origination_pct_rows, snapshot_date)
+    _create_table(con, "originations_by_matter_originator_year", origination_by_year_rows, snapshot_date)
 
     # --- Timekeeper hours (measuring period, per entity) -----------------
     tk_hours_rows = parse_timekeeper_hours.parse()
