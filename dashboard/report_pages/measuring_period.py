@@ -7,8 +7,13 @@ FY revenue now uses real GL trial balance revenue by entity.
 Practice-group profitability now uses real matter-level profit (the NTE
 Tracking Report, etl/parse_matter_earnings.py) joined to the matter
 list's practice-group taxonomy -- but that report only covers matters
-with a not-to-exceed cap set (42 of ~315 matters), so this is real data
-for a subset of the portfolio, not the whole thing; captioned as such.
+billed against a not-to-exceed cap (42 of ~315 matters). This isn't a
+data gap to fill: flat-fee and T&E matters are never NTE-capped in the
+first place, so most of the portfolio structurally doesn't appear in
+this report by design. Full-portfolio profitability would need a
+different bridge per billing type (flat-fee revenue is already known at
+signing; T&E would come from WIP/billing, not this report), not more of
+this same export. Captioned as such on the page.
 
 The origination credit matrix (etl/parse_originations.py) gives real
 originating-attorney credit fractions per matter, but dollarizing them
@@ -296,9 +301,10 @@ def _section_practice_group_profitability():
         """
     ).iloc[0]
     st.caption(
-        f"Real JTD revenue/profit, but only for the {int(match['total'])} matters the NTE "
-        f"Tracking Report covers (matters with a not-to-exceed cap set) -- not the full "
-        f"~315-matter portfolio, so this is directional for those practice groups, not a "
+        f"Real JTD revenue/profit, but only for the {int(match['total'])} matters billed against "
+        f"a not-to-exceed cap -- flat-fee and T&E matters (most of the ~315-matter portfolio) are "
+        f"never NTE-capped, so they structurally don't appear in this report; it's not a coverage "
+        f"gap to fill with more of the same export. Directional for these practice groups, not a "
         f"complete picture firm-wide. {match['matched']}/{match['total']} matched to a practice "
         f"group by matter code; unmatched group as \"Unmapped\"."
     )
