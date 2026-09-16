@@ -85,11 +85,15 @@ logger = logging.getLogger("somos.etl.originations_model")
 
 
 def build_project_list_by_entity(matter_rows: list[dict]) -> list[dict]:
-    """One row per matter -- matter_list re-sorted (entity, client,
-    matter_code) so it reads as a project list per entity rather than
-    raw export order."""
+    """One row per real client matter -- matter_list re-sorted (entity,
+    client, matter_code) so it reads as a project list per entity rather
+    than raw export order. Internal/admin matters (client_name is None
+    in matter_list -- office admin, PTO, holiday, pro bono buckets not
+    tied to a real client, per parse_matter_list.py) are excluded: they
+    aren't client projects and can't carry origination credit, so they
+    don't belong on a project list built for that purpose."""
     return sorted(
-        matter_rows,
+        (r for r in matter_rows if r.get("client_name")),
         key=lambda r: (r.get("entity") or "", r.get("client_name") or "", r.get("matter_code") or ""),
     )
 
