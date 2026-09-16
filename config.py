@@ -92,6 +92,13 @@ SOURCE_FILE_PATTERNS = {
     "ar_summary": ["*AR*Summary*.csv", "*AR*Summary*.xlsx"],
     "employee_cost": ["*Employee*Cost*Rate*.xlsx"],
     "nte_tracking": ["*NTE*Tracking*.xlsx"],
+    # Plain "Matter Earnings" export (etl/parse_matter_earnings_full.py) --
+    # a different, much less partial report than the NTE Tracking Report
+    # above: every matter with JTD activity, not just ones with a
+    # not-to-exceed cap set. Pattern requires "Matter" immediately next
+    # to "Earnings" (not just both words somewhere in the name) so it
+    # doesn't also match a differently-worded NTE Tracking Report file.
+    "matter_earnings_full": ["*Matter_Earnings*.xlsx", "*Matter Earnings*.xlsx"],
 }
 
 # The NTE Tracking Report only covers matters with a not-to-exceed cap

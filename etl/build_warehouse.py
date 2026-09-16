@@ -50,6 +50,7 @@ from etl import (
     parse_employee_targets,
     parse_gl,
     parse_matter_earnings,
+    parse_matter_earnings_full,
     parse_matter_list,
     parse_originations,
     parse_receipts,
@@ -212,9 +213,17 @@ def build(snapshot_date: date | None = None) -> Path:
     parse_employee_targets.write_processed(target_rows)
     _create_table(con, "employee_targets", target_rows, snapshot_date)
 
-    # --- Matter earnings (NTE-tracked matters only -- real revenue/profit) --
-    matter_earnings_rows = parse_matter_earnings.parse()
-    parse_matter_earnings.write_processed(matter_earnings_rows)
+    # --- Matter earnings: NTE Tracking Report (NTE-tracked matters only)
+    # merged with the plain Matter Earnings report (every matter with JTD
+    # activity, a much less partial source) -- the latter wins on any
+    # matter code both report, since it's the less-filtered figure. -----
+    nte_earnings_rows = parse_matter_earnings.parse()
+    parse_matter_earnings.write_processed(nte_earnings_rows)
+    full_earnings_rows = parse_matter_earnings_full.parse()
+    parse_matter_earnings_full.write_processed(full_earnings_rows)
+    matter_earnings_by_code = {r["matter_code"]: r for r in nte_earnings_rows}
+    matter_earnings_by_code.update({r["matter_code"]: r for r in full_earnings_rows})
+    matter_earnings_rows = list(matter_earnings_by_code.values())
     _create_table(con, "matter_earnings", matter_earnings_rows, snapshot_date)
 
     # --- Matter master list (matter code -> client -> entity -> org) ----

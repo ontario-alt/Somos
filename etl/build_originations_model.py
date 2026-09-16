@@ -498,14 +498,18 @@ Outstanding data needs -- originations model
    dropped off the active list. Do (a) regardless -- it unblocks
    everything else on this list and removes the guesswork in (b).
 
-2. Billed amount by matter BY YEAR, and collected amount by matter BY
-   YEAR. Cost Basis currently uses matter_earnings' invoiced_to_date,
-   which is life-to-date and only covers matters with a not-to-exceed
-   cap set (~42 of ~315 matters firm-wide). Collected Amount uses
-   cash_receipts, which is real and matter-level but needs a full fiscal
-   year of history pulled, not just the current weekly/monthly snapshot.
-   Need a "Billing History by Matter" report (or GL revenue account
-   structure) for the billed side, by fiscal year.
+2. Collected amount by matter, at scale (billed amount coverage just
+   improved a lot). Cost Basis uses matter_earnings' invoiced_to_date,
+   now merged from two reports: the NTE Tracking Report (cap-set matters
+   only) and the plain Matter Earnings report (every matter with JTD
+   activity -- 163 matters in the file provided, a real jump from ~42).
+   Collected Amount still uses cash_receipts, which is matter-level and
+   real but only pulled for the current weekly/monthly snapshot -- a
+   full fiscal year of history is needed before the matched-and-billed
+   rows can actually dollarize. Both billed and collected are still JTD
+   (life-to-date) rather than split by year, which "originations by
+   year" ultimately needs -- see a "Billing History by Matter" report
+   (by fiscal year) as the eventual fix for the billed side.
 
 3. Real Reimbursements and Originator Costs data. Both currently default
    to $0 in every calculated row:
