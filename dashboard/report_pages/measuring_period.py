@@ -217,8 +217,14 @@ def _section_fy_vs_prior_fy():
 def _section_originations():
     st.subheader("Originations Model")
     st.caption(
-        "Formula: Origination_$(attorney, matter, year) = credit_fraction(attorney, matter) "
-        "x Matter_Revenue(matter, year). See config.py and etl/build_originations_model.py."
+        "Formula: Total Take Home(matter, year) = (Revenue Basis - Reimbursements) "
+        "- Cost Basis x (direct % + indirect %) - Originator Costs, then x (1 - capital expense %); "
+        "Origination_$(attorney, matter, year) = credit_fraction x Total Take Home. Calculated on "
+        "both a billed and a collected revenue basis. Eligible only for matters with an 'OK' "
+        "origination-matrix status, a nonzero credit fraction, and an entity in "
+        "config.ORIGINATABLE_ENTITIES (LLC/LLP -- Somos Group Mexico is a real entity with matters "
+        "already on the books, flagged as a future third originatable entity, not yet built out). "
+        "See config.py and etl/build_originations_model.py."
     )
 
     if table_exists("project_list_by_entity"):
@@ -249,18 +255,21 @@ def _section_originations():
         st.plotly_chart(fig, use_container_width=True)
 
     if table_exists("originations_by_matter_originator_year"):
-        st.markdown("**Originations by matter, originator and year**")
+        st.markdown("**Originations by matter, originator and year -- billed vs. collected**")
         by_year = query(
             "SELECT year, entity, client_name, matter_name, attorney, credit_fraction, "
-            "origination_credit_dollars, data_status FROM originations_by_matter_originator_year "
-            "ORDER BY attorney, entity, client_name"
+            "billed_amount, collected_amount, origination_credit_billed, origination_credit_collected, "
+            "data_status FROM originations_by_matter_originator_year ORDER BY attorney, entity, client_name"
         )
         st.dataframe(by_year, use_container_width=True, hide_index=True)
-        n_dollarized = int((by_year["origination_credit_dollars"].notna()).sum())
+        n_eligible = int((~by_year["data_status"].str.startswith("Not eligible")).sum())
+        n_billed = int(by_year["origination_credit_billed"].notna().sum())
+        n_collected = int(by_year["origination_credit_collected"].notna().sum())
         st.caption(
-            f"{n_dollarized} of {len(by_year)} rows dollarized (life-to-date revenue proxy, not a true "
-            "annual figure); the rest are flagged with why -- see `data_status` and the outstanding "
-            "data needs below."
+            f"{n_eligible} of {len(by_year)} rows eligible; {n_billed} dollarized on a billed basis, "
+            f"{n_collected} on a collected basis. Billed amount is matter_earnings life-to-date, not a "
+            "true annual figure, and Reimbursements/Originator Costs are assumed $0 (no source yet) -- "
+            "see `data_status` per row and the outstanding data needs below."
         )
         if not config.ORIGINATION_TARGETS:
             st.caption("`config.ORIGINATION_TARGETS` is still empty -- needed for actual-vs-target once dollars are reliable.")

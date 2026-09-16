@@ -228,15 +228,51 @@ ORIGINATION_TARGETS = {
     # "Attorney Name": 500_000.00,
 }
 
-# Origination formula (see etl/build_originations_model.py for the real
-# implementation and the outstanding-data-needs list):
+# Origination formula -- the firm's own per-matter waterfall (from the
+# "Originations Model" workbook), reproduced exactly in
+# etl/build_originations_model.py::compute_matter_takehome and verified
+# there against the workbook's own worked example (Steerpoint / Escondido
+# Mall) to the penny:
+#
+#   Cost Basis(matter)        = Billed Amount(matter, year)
+#   Adjusted Revenue          = Revenue Basis(matter, year) - Reimbursements
+#   Direct Costs              = Cost Basis x ORIGINATION_DIRECT_COST_PCT
+#   Indirect Costs            = Cost Basis x ORIGINATION_INDIRECT_COST_PCT
+#   Gross Profit to Somos     = Adjusted Revenue - Direct Costs
+#                               - Originator Costs - Indirect Costs
+#   Capital Expense Adj.      = Gross Profit to Somos x ORIGINATION_CAPITAL_EXPENSE_PCT
+#   Total Take Home (matter)  = Gross Profit to Somos - Capital Expense Adj.
 #
 #   Origination_$(attorney, matter, year)
-#       = credit_fraction(attorney, matter) x Matter_Revenue(matter, year)
+#       = credit_fraction(attorney, matter) x Total Take Home(matter, year)
 #
 #   Attorney_Originations(attorney, year)
 #       = SUM over matter of Origination_$(attorney, matter, year)
 #
-# credit_fraction comes from the origination credit matrix (parse_originations.py).
-# Matter_Revenue(matter, year) has no reliable source yet -- see item 2 of
-# build_originations_model.OUTSTANDING_DATA_NEEDS.
+# Revenue Basis is calculated TWICE per matter -- once using Billed
+# Amount, once using Collected (cash receipts) Amount -- since the firm
+# hasn't picked one; see build_originations_model.py's
+# originations_by_matter_originator_year output (columns suffixed
+# _billed / _collected) and item 3 of OUTSTANDING_DATA_NEEDS.
+#
+# Eligibility (a matter/attorney pair must clear ALL of these before the
+# formula runs at all -- see build_originations_model.py::is_eligible):
+#   - origination matrix status is "OK" (not a GAP, INCOMPLETE, Pro Bono,
+#     or duplicate row)
+#   - credit_fraction > 0
+#   - entity is in ORIGINATABLE_ENTITIES below
+ORIGINATION_DIRECT_COST_PCT = 0.30
+ORIGINATION_INDIRECT_COST_PCT = 0.35
+ORIGINATION_CAPITAL_EXPENSE_PCT = 0.20
+
+# Entities whose matters currently go through the origination-credit
+# process. Somos Group Mexico is a real entity (ENTITIES above,
+# MATTER_CODE_ENTITY_PREFIXES["MEX"]) with matters already appearing in
+# the matter list export, so it's a future originatable entity worth
+# planning for -- but it has no origination matrix, matter_earnings, or
+# revenue data yet, so it's deliberately left out of this list until
+# that's built out.
+ORIGINATABLE_ENTITIES = [
+    "Somos Group LLC",
+    "Somos Law Group LLP",
+]

@@ -164,7 +164,9 @@ def build(snapshot_date: date | None = None) -> Path:
     except FileNotFoundError as e:
         logger.warning(str(e))
 
-    # --- Cash receipts (supplementary, weekly cash page) --------------
+    # --- Cash receipts (supplementary, weekly cash page; also the
+    # originations model's collected-basis revenue source) -------------
+    receipt_rows: list[dict] = []
     try:
         receipt_rows = parse_receipts.parse()
         parse_receipts.write_processed(receipt_rows)
@@ -233,7 +235,7 @@ def build(snapshot_date: date | None = None) -> Path:
     project_list_rows = build_originations_model.build_project_list_by_entity(matter_rows)
     origination_pct_rows = build_originations_model.build_origination_pct_by_matter(origination_rows)
     origination_by_year_rows = build_originations_model.build_originations_by_matter_originator_year(
-        origination_rows, matter_rows, matter_earnings_rows, snapshot_date.year
+        origination_rows, matter_rows, matter_earnings_rows, receipt_rows, snapshot_date.year
     )
     build_originations_model.write_processed(project_list_rows, origination_pct_rows, origination_by_year_rows)
     _create_table(con, "project_list_by_entity", project_list_rows, snapshot_date)

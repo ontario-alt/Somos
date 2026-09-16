@@ -3,48 +3,77 @@ Originations model: three deliverables built from tables the existing
 parsers already produce --
 
   1. Project list by entity   -- matter_list, grouped/sorted by entity
-                                  (LLC / LLP / Somos Group Mexico).
+                                  (LLC / LLP; Somos Group Mexico exists
+                                  as an entity but has no origination
+                                  process yet -- see ORIGINATABLE_ENTITIES
+                                  in config.py).
   2. Origination % by matter  -- the origination credit matrix, pivoted
                                   to one row per matter with each
                                   attorney's credit fraction as its own
                                   column.
   3. Originations by matter,
      originator and year      -- dollarized origination credit, per the
-                                  formula below.
+                                  formula below, computed on both a
+                                  billed and a collected revenue basis.
 
 Origination formula
 --------------------
+This reproduces the firm's own per-matter waterfall (the "Originations
+Model" workbook) exactly -- compute_matter_takehome() below is verified
+against that workbook's own worked example (Steerpoint / Escondido Mall)
+to the penny, see the __main__ smoke check.
+
+    Cost Basis(matter)       = Billed Amount(matter, year)
+    Adjusted Revenue         = Revenue Basis(matter, year) - Reimbursements
+    Direct Costs             = Cost Basis x config.ORIGINATION_DIRECT_COST_PCT
+    Indirect Costs           = Cost Basis x config.ORIGINATION_INDIRECT_COST_PCT
+    Gross Profit to Somos    = Adjusted Revenue - Direct Costs
+                                - Originator Costs - Indirect Costs
+    Capital Expense Adj.     = Gross Profit to Somos x config.ORIGINATION_CAPITAL_EXPENSE_PCT
+    Total Take Home(matter)  = Gross Profit to Somos - Capital Expense Adj.
+
     Origination_$(attorney, matter, year)
-        = credit_fraction(attorney, matter) x Matter_Revenue(matter, year)
+        = credit_fraction(attorney, matter) x Total Take Home(matter, year)
 
     Attorney_Originations(attorney, year)
         = SUM over matter of Origination_$(attorney, matter, year)
 
-credit_fraction comes straight from the origination credit matrix
-(etl/parse_originations.py): the attorney's assigned share of a
-matter's origination credit, 0-1, summing to ~1.0 per matter once fully
-assigned.
+Revenue Basis is run twice per matter, once as Billed Amount and once as
+Collected (cash receipts) Amount -- the workbook itself uses collected
+("Total Amount Paid by Client") for revenue while using billed ("Initial
+Billed Amount") as the Cost Basis for the Direct/Indirect Cost
+percentages; this module keeps that same Cost Basis but reports take-home
+under both revenue bases side by side, since the firm hasn't picked one
+(see OUTSTANDING_DATA_NEEDS item 3).
 
-Matter_Revenue(matter, year) is the piece this repo does not yet have a
-reliable source for -- see OUTSTANDING_DATA_NEEDS below. This module
-dollarizes what it can from matter_earnings (real revenue, but
-life-to-date rather than split by year, and only for the subset of
-matters with an NTE cap set) and leaves every other row's dollar figure
-None with a `data_status` explaining exactly what's missing, rather
-than fabricating or silently dropping a number.
+Eligibility
+-----------
+A (matter, attorney) pair is run through the formula at all only if
+is_eligible() below says yes: origination-matrix status is "OK" (not a
+GAP/INCOMPLETE/Pro-Bono/duplicate row), credit_fraction > 0, and the
+matter's entity is in config.ORIGINATABLE_ENTITIES. Ineligible rows are
+still listed in the output with a reason -- never silently dropped.
 
-Bridging the origination matrix (free-text client/matter names) to the
-matter master (matter_code) and to matter_earnings (also keyed by
-matter_code) is done by a normalized (client_name, matter_name) key
-(etl/common.py::normalize_join_key), since the origination export
-carries no matter code of its own. This is an approximate join; a real
+Data bridges
+------------
+The origination matrix carries no matter code, only free-text client/
+matter names, so bridging it to the matter master (matter_code), to
+matter_earnings (billed amount, keyed by matter_code) and to cash
+receipts (collected amount, keyed by client_name/matter_name) is done by
+a normalized (client_name, matter_name) key
+(etl/common.py::normalize_join_key). This is an approximate join; a real
 matter-code column on the origination export would replace it outright
--- see item 1 of OUTSTANDING_DATA_NEEDS.
+-- see OUTSTANDING_DATA_NEEDS item 1. Originator Costs (100% of the
+originating attorney's own paid time on the matter, per the workbook) has
+no real source at all yet -- see item 4 -- so it defaults to $0 with that
+assumption stated in every row's data_status rather than silently
+dropped.
 """
 from __future__ import annotations
 
 import logging
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -93,52 +122,136 @@ def build_origination_pct_by_matter(origination_rows: list[dict]) -> list[dict]:
     return sorted(out, key=lambda r: (r["entity"] or "", r["client_name"] or "", r["matter_name"] or ""))
 
 
+def is_eligible(entity: str | None, credit_fraction: float | None, status: str | None) -> tuple[bool, str]:
+    """A (matter, attorney) origination-credit row must clear all three
+    of these before the take-home formula runs at all. Ineligible rows
+    are still surfaced downstream with the reason, never dropped."""
+    if status and status != "OK":
+        return False, f"Not eligible -- origination matrix status '{status}'"
+    if not credit_fraction or credit_fraction <= 0:
+        return False, "Not eligible -- no origination credit fraction assigned"
+    if entity not in config.ORIGINATABLE_ENTITIES:
+        return False, f"Not eligible -- {entity} is not yet an originatable entity (see config.ORIGINATABLE_ENTITIES)"
+    return True, "Eligible"
+
+
+def compute_matter_takehome(
+    revenue: float,
+    cost_basis: float,
+    reimbursements: float,
+    originator_costs: float,
+    direct_cost_pct: float = config.ORIGINATION_DIRECT_COST_PCT,
+    indirect_cost_pct: float = config.ORIGINATION_INDIRECT_COST_PCT,
+    capital_expense_pct: float = config.ORIGINATION_CAPITAL_EXPENSE_PCT,
+) -> dict:
+    """The per-matter waterfall in this module's docstring, as pure
+    arithmetic over already-resolved dollar inputs -- see the __main__
+    block for the worked-example check against the source workbook."""
+    adjusted_revenue = revenue - reimbursements
+    direct_costs = cost_basis * direct_cost_pct
+    indirect_costs = cost_basis * indirect_cost_pct
+    gross_profit_to_somos = adjusted_revenue - direct_costs - originator_costs - indirect_costs
+    capital_expense_adjustment = gross_profit_to_somos * capital_expense_pct
+    total_take_home = gross_profit_to_somos - capital_expense_adjustment
+    return {
+        "adjusted_revenue": round(adjusted_revenue, 2),
+        "direct_costs": round(direct_costs, 2),
+        "originator_costs": round(originator_costs, 2),
+        "indirect_costs": round(indirect_costs, 2),
+        "gross_profit_to_somos": round(gross_profit_to_somos, 2),
+        "capital_expense_adjustment": round(capital_expense_adjustment, 2),
+        "total_take_home": round(total_take_home, 2),
+    }
+
+
 def build_originations_by_matter_originator_year(
     origination_rows: list[dict],
     matter_rows: list[dict],
     matter_earnings_rows: list[dict],
+    cash_receipt_rows: list[dict],
     year: int,
 ) -> list[dict]:
-    """Applies the formula in this module's docstring to every
-    (attorney, matter) origination-credit row. Dollarizes only where a
-    normalized-name bridge to a real matter_code and a matter_earnings
-    revenue figure both exist; every other row comes back with
-    origination_credit_dollars=None and a data_status explaining why,
-    rather than a guessed number."""
+    """Applies is_eligible() and then compute_matter_takehome() (twice --
+    billed basis and collected basis) to every (attorney, matter)
+    origination-credit row. Reimbursements and Originator Costs have no
+    real source yet, so both default to $0 (stated in data_status, not
+    hidden) -- see OUTSTANDING_DATA_NEEDS. A row only gets a dollar
+    figure when its Cost Basis (billed amount, via matter_earnings) and
+    the relevant Revenue Basis are both resolved; otherwise the take-home
+    columns are None with a data_status explaining exactly what's
+    missing."""
     matter_key_to_code = {
         normalize_join_key(r.get("client_name"), r.get("matter_name")): r.get("matter_code") for r in matter_rows
     }
-    revenue_by_code = {r["matter_code"]: r["jtd_revenue"] for r in matter_earnings_rows}
+    billed_by_code = {r["matter_code"]: r["invoiced_to_date"] for r in matter_earnings_rows}
+
+    collected_by_key: dict[str, float] = defaultdict(float)
+    for r in cash_receipt_rows:
+        if r.get("receipt_date") and r["receipt_date"].year != year:
+            continue
+        key = normalize_join_key(r.get("client_name"), r.get("matter_name"))
+        collected_by_key[key] += r.get("amount") or 0.0
 
     out = []
     for r in origination_rows:
-        matter_code = matter_key_to_code.get(normalize_join_key(r["client_name"], r["matter_name"]))
-        revenue = revenue_by_code.get(matter_code) if matter_code else None
+        key = normalize_join_key(r["client_name"], r["matter_name"])
+        matter_code = matter_key_to_code.get(key)
+        billed = billed_by_code.get(matter_code) if matter_code else None
+        collected = collected_by_key.get(key)
 
-        if r["status"] and r["status"] != "OK":
-            dollars, data_status = None, f"Excluded -- origination matrix status '{r['status']}'"
-        elif matter_code is None:
-            dollars, data_status = None, "NEEDS MATTER CODE -- origination matter name didn't bridge to the matter list"
-        elif revenue is None:
-            dollars, data_status = None, "NEEDS REVENUE -- matter has a code but no matter_earnings (NTE-tracked) revenue"
+        row = {
+            "year": year,
+            "entity": r["entity"],
+            "client_name": r["client_name"],
+            "matter_name": r["matter_name"],
+            "matched_matter_code": matter_code,
+            "attorney": r["attorney"],
+            "credit_fraction": r["credit_fraction"],
+            "billed_amount": billed,
+            "collected_amount": collected,
+            "reimbursements": 0.0,
+            "originator_costs": 0.0,
+            "origination_credit_billed": None,
+            "origination_credit_collected": None,
+        }
+
+        eligible, reason = is_eligible(r["entity"], r["credit_fraction"], r["status"])
+        if not eligible:
+            row["data_status"] = reason
+            out.append(row)
+            continue
+        if matter_code is None:
+            row["data_status"] = "NEEDS MATTER CODE -- origination matter name didn't bridge to the matter list"
+            out.append(row)
+            continue
+        if billed is None:
+            row["data_status"] = (
+                "NEEDS BILLED $ -- matter has a code but no matter_earnings (NTE-tracked) invoiced-to-date figure "
+                "to use as Cost Basis"
+            )
+            out.append(row)
+            continue
+
+        statuses = []
+        billed_result = compute_matter_takehome(billed, billed, 0.0, 0.0)
+        row["origination_credit_billed"] = round(r["credit_fraction"] * billed_result["total_take_home"], 2)
+
+        if collected is None:
+            statuses.append(
+                "NEEDS COLLECTED $ -- no cash receipts bridged to this matter for this year "
+                "(collected-basis take-home not computed)"
+            )
         else:
-            dollars = round(r["credit_fraction"] * revenue, 2)
-            data_status = "JTD proxy -- matter_earnings has no annual breakdown, see outstanding data needs"
+            collected_result = compute_matter_takehome(collected, billed, 0.0, 0.0)
+            row["origination_credit_collected"] = round(r["credit_fraction"] * collected_result["total_take_home"], 2)
 
-        out.append(
-            {
-                "year": year,
-                "entity": r["entity"],
-                "client_name": r["client_name"],
-                "matter_name": r["matter_name"],
-                "matched_matter_code": matter_code,
-                "attorney": r["attorney"],
-                "credit_fraction": r["credit_fraction"],
-                "matter_revenue_jtd": revenue,
-                "origination_credit_dollars": dollars,
-                "data_status": data_status,
-            }
+        statuses.append(
+            "Reimbursements and Originator Costs assumed $0 (no source yet); billed amount is "
+            "matter_earnings life-to-date, not a true annual figure -- see outstanding data needs"
         )
+        row["data_status"] = "; ".join(statuses)
+        out.append(row)
+
     return sorted(out, key=lambda r: (r["attorney"] or "", r["entity"] or "", r["client_name"] or ""))
 
 
@@ -154,46 +267,54 @@ Outstanding data needs -- originations model
    AR/WIP/matter_earnings already use (e.g. "LLC25-002") as its own
    column. This single fix unblocks everything else on this list.
 
-2. Revenue by matter BY YEAR. No current source has this. What exists:
-     - matter_earnings (NTE Tracking Report): real life-to-date revenue
-       per matter, but only for matters with a not-to-exceed cap set
-       (~42 of ~315 matters firm-wide), and not split by year.
-     - ar_summary_monthly: real $ by client and month, but by CLIENT,
-       not matter -- can't isolate one matter's revenue when a client
-       has several.
-     - wip_by_matter: current-period billing value only (a snapshot,
-       not a historical annual series), and billed-at-standard-rate
-       WIP, not recognized or collected revenue.
-   Need: an export (or GL revenue account structure) that reports $ by
-   matter by fiscal year -- e.g. a "Billing History by Matter" or
-   "Revenue by Matter by Period" report, or WIP/AR snapshots retained
-   and summed at each fiscal year-end.
+2. Billed amount by matter BY YEAR. The formula's Cost Basis and
+   billed-basis Revenue currently use matter_earnings' invoiced_to_date,
+   which is life-to-date and only covers matters with a not-to-exceed
+   cap set (~42 of ~315 matters firm-wide). Need an export (or GL
+   revenue account structure) that reports billed $ by matter by fiscal
+   year -- e.g. a "Billing History by Matter" report.
 
-3. A firm decision on which revenue this model should recognize --
-   billed, collected (cash receipts), or GL revenue account. The
-   formula multiplies credit_fraction by "Matter_Revenue" but which of
-   billed/collected/recognized that means hasn't been specified, and
-   they will diverge, especially for slow-pay clients.
+3. A firm decision on which Revenue Basis is the one that actually pays
+   out -- billed or collected -- rather than showing both. This module
+   computes both (origination_credit_billed / origination_credit_collected)
+   because the firm hasn't picked one; they will diverge, especially for
+   slow-pay clients.
 
-4. Sign-off / cleanup of the origination matrix's flagged rows (see
+4. Real Reimbursements and Originator Costs data. Both currently default
+   to $0 in every calculated row:
+     - Reimbursements (pass-through/third-party expenses to deduct from
+       revenue) -- no export currently carries this at the matter level.
+     - Originator Costs (100% of the originating attorney's own paid
+       time on the matter, per the workbook's Adjustment #3) -- needs
+       payroll/draw data tied to the attorney's own billed hours on that
+       specific matter; wip_transactions has employee-level billing
+       amounts per matter but isn't confirmed to represent "time paid",
+       so it isn't used here without sign-off.
+   Until both are sourced, every take-home figure understates the firm's
+   actual deductions.
+
+5. Sign-off / cleanup of the origination matrix's flagged rows (see
    originations_flagged.csv, the "Matters needing attention" table) --
    "GAP -- No Origination Assigned" and "INCOMPLETE -- Sums to X%" rows
-   can't be dollarized until an attorney is actually assigned or the
-   fractions are corrected to sum to 100%.
+   are correctly excluded as not eligible, but can't be dollarized until
+   an attorney is actually assigned or the fractions are corrected to
+   sum to 100%.
 
-5. Historical origination-matrix snapshots. The matrix is parsed as a
+6. Historical origination-matrix snapshots. The matrix is parsed as a
    single current snapshot with no year of its own -- "originations by
    year" requires either one matrix file per fiscal year (origination
    can shift year to year, e.g. a matter reassigned to a new
    originating attorney) or a year/effective_date column on the export.
 
-6. Somos Group Mexico coverage. matter_list/config.py already carry
-   this entity (MATTER_CODE_ENTITY_PREFIXES["MEX"]), but no sample
-   origination, matter_earnings, or AR export for it has been seen yet
-   -- confirm whether MX matters run through the same origination
-   matrix or a separate one.
+7. Somos Group Mexico's origination process. MX is a real entity already
+   in the matter list (config.ENTITIES, MATTER_CODE_ENTITY_PREFIXES["MEX"])
+   with matters on the books, so it's flagged here as a future
+   originatable entity -- but it has no origination matrix, matter
+   earnings, or revenue data yet, so it's deliberately excluded from
+   config.ORIGINATABLE_ENTITIES (rows for it are marked "not eligible")
+   until the firm builds out an origination process for it.
 
-7. config.ORIGINATION_TARGETS is still empty -- needed for any
+8. config.ORIGINATION_TARGETS is still empty -- needed for any
    actual-vs-target view once dollars are available.
 """
 
@@ -236,19 +357,29 @@ def write_processed(
 if __name__ == "__main__":
     import datetime
 
-    from etl import parse_matter_earnings, parse_matter_list, parse_originations
+    from etl import parse_matter_earnings, parse_matter_list, parse_originations, parse_receipts
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    # Formula smoke check against the source workbook's own worked
+    # example (Steerpoint / Escondido Mall) -- must match to the penny.
+    check = compute_matter_takehome(revenue=50258.20, cost_basis=75175.11, reimbursements=0.0, originator_costs=8252.72)
+    assert abs(check["total_take_home"] - (-5486.67)) < 0.01, check
+    logger.info("Formula smoke check OK: %s", check)
 
     matter_rows = parse_matter_list.parse()
     origination_rows, origination_flagged = parse_originations.parse()
     matter_earnings_rows = parse_matter_earnings.parse()
+    try:
+        cash_receipt_rows = parse_receipts.parse()
+    except FileNotFoundError:
+        cash_receipt_rows = []
 
     project_list = build_project_list_by_entity(matter_rows)
     origination_pct = build_origination_pct_by_matter(origination_rows)
     year = datetime.date.today().year
     origination_by_year = build_originations_by_matter_originator_year(
-        origination_rows, matter_rows, matter_earnings_rows, year
+        origination_rows, matter_rows, matter_earnings_rows, cash_receipt_rows, year
     )
 
     paths = write_processed(project_list, origination_pct, origination_by_year)
@@ -256,12 +387,12 @@ if __name__ == "__main__":
         print(f"{name}: {path}")
 
     if origination_rows:
-        matched = sum(1 for r in origination_by_year if r["matched_matter_code"])
-        dollarized = sum(1 for r in origination_by_year if r["origination_credit_dollars"] is not None)
+        eligible = sum(1 for r in origination_by_year if r["data_status"] and not r["data_status"].startswith("Not eligible"))
+        billed_dollarized = sum(1 for r in origination_by_year if r["origination_credit_billed"] is not None)
+        collected_dollarized = sum(1 for r in origination_by_year if r["origination_credit_collected"] is not None)
         print(
-            f"\n{len(origination_rows)} origination-credit rows: "
-            f"{matched} matter-code-matched ({matched / len(origination_rows):.0%}), "
-            f"{dollarized} dollarized ({dollarized / len(origination_rows):.0%})"
+            f"\n{len(origination_rows)} origination-credit rows: {eligible} eligible, "
+            f"{billed_dollarized} billed-basis dollarized, {collected_dollarized} collected-basis dollarized"
         )
 
     print("\n" + OUTSTANDING_DATA_NEEDS)
