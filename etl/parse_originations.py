@@ -13,7 +13,7 @@ for the Measuring Period page, but doesn't by itself give dollar
 originations -- that still needs to be joined against a revenue source
 (WIP or GL) by matter name, which is an approximate join (matter naming
 isn't guaranteed identical across exports) done at query time in
-dashboard/pages/measuring_period.py, not here. This parser's only job is
+dashboard/report_pages/measuring_period.py, not here. This parser's only job is
 to turn the wide credit-fraction matrix into a tidy long form.
 
 Output grain: one row per (client, matter, entity, attorney) with a

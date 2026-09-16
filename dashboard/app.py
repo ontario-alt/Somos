@@ -16,7 +16,7 @@ import streamlit as st
 
 import config
 from dashboard.data import warehouse_last_built
-from dashboard.pages import measuring_period, monthly, quarterly, weekly
+from dashboard.report_pages import measuring_period, monthly, quarterly, weekly
 
 st.set_page_config(page_title="Somos Group Executive Dashboard", layout="wide", page_icon="\U0001f4ca")
 

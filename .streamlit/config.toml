@@ -1,9 +1,13 @@
-# dashboard/pages/ is a plain module package the app imports explicitly
-# (see dashboard/app.py), not Streamlit's auto-discovered multipage
-# folder -- the name collision is coincidental (it matches the file
-# layout requested for this project). Disable the automatic sidebar
-# page nav Streamlit generates from that folder so our own radio-based
-# nav in app.py is the only navigation shown.
+# The page modules live in dashboard/report_pages/, not dashboard/pages/,
+# specifically to avoid Streamlit's reserved "pages" folder name -- that
+# collision used to trigger Streamlit's own multipage routing (visible as
+# "_mpa_v1" in tracebacks) running alongside our own radio-based nav in
+# app.py, which corrupted st.cache_data results intermittently (a query
+# would return None instead of a DataFrame). showSidebarNavigation only
+# hides the *UI* Streamlit generates from a pages/ folder -- it does not
+# disable the routing engine, so the rename was the actual fix; this
+# setting is kept as a harmless belt-and-suspenders in case a pages/
+# folder ever reappears.
 [client]
 showSidebarNavigation = false
 

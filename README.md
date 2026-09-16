@@ -13,7 +13,7 @@ reference/         employee_targets.csv = hand-maintained, not a Vantagepoint ex
 etl/               parse_*.py  = one parser per Vantagepoint export
                    build_warehouse.py = combines tidy tables into data/processed/warehouse.duckdb
 dashboard/app.py   Streamlit entrypoint
-dashboard/pages/   weekly.py, monthly.py, quarterly.py, measuring_period.py
+dashboard/report_pages/   weekly.py, monthly.py, quarterly.py, measuring_period.py
 dashboard/charts/  reusable Plotly chart components
 config.py          paths, entity list, fiscal year, targets -- edit this, not the code
 ```
