@@ -13,8 +13,9 @@ parsers already produce --
                                   column.
   3. Originations by matter,
      originator and year      -- dollarized origination credit, per the
-                                  formula below, computed on both a
-                                  billed and a collected revenue basis.
+                                  formula below, run on the collected
+                                  revenue basis only (see "Revenue basis"
+                                  below).
 
 Origination formula
 --------------------
@@ -24,7 +25,7 @@ against that workbook's own worked example (Steerpoint / Escondido Mall)
 to the penny, see the __main__ smoke check.
 
     Cost Basis(matter)       = Billed Amount(matter, year)
-    Adjusted Revenue         = Revenue Basis(matter, year) - Reimbursements
+    Adjusted Revenue         = Collected Amount(matter, year) - Reimbursements
     Direct Costs             = Cost Basis x config.ORIGINATION_DIRECT_COST_PCT
     Indirect Costs           = Cost Basis x config.ORIGINATION_INDIRECT_COST_PCT
     Gross Profit to Somos    = Adjusted Revenue - Direct Costs
@@ -38,13 +39,14 @@ to the penny, see the __main__ smoke check.
     Attorney_Originations(attorney, year)
         = SUM over matter of Origination_$(attorney, matter, year)
 
-Revenue Basis is run twice per matter, once as Billed Amount and once as
-Collected (cash receipts) Amount -- the workbook itself uses collected
-("Total Amount Paid by Client") for revenue while using billed ("Initial
-Billed Amount") as the Cost Basis for the Direct/Indirect Cost
-percentages; this module keeps that same Cost Basis but reports take-home
-under both revenue bases side by side, since the firm hasn't picked one
-(see OUTSTANDING_DATA_NEEDS item 3).
+Revenue basis: collected only. The firm has decided originations run on
+money actually collected from the client, not billed -- so Revenue Basis
+above is always Collected (cash receipts) Amount. Billed Amount is still
+used, unchanged, as the Cost Basis that sets the Direct/Indirect Cost
+percentages (that's a firm-overhead assumption tied to what was invoiced,
+not a revenue figure). An earlier version of this module also computed a
+billed-basis take-home for comparison; that's been removed now that the
+firm has picked collected as the one that pays out.
 
 Eligibility
 -----------
@@ -60,17 +62,23 @@ The origination matrix carries no matter code, only free-text client/
 matter names, so bridging it to the matter master (matter_code), to
 matter_earnings (billed amount, keyed by matter_code) and to cash
 receipts (collected amount, keyed by client_name/matter_name) is done by
-a normalized (client_name, matter_name) key
-(etl/common.py::normalize_join_key). This is an approximate join; a real
-matter-code column on the origination export would replace it outright
--- see OUTSTANDING_DATA_NEEDS item 1. Originator Costs (100% of the
-originating attorney's own paid time on the matter, per the workbook) has
-no real source at all yet -- see item 4 -- so it defaults to $0 with that
-assumption stated in every row's data_status rather than silently
-dropped.
+bridge_matter() below: an exact normalized (client_name, matter_name) key
+match first (etl/common.py::normalize_join_key), falling back to an exact
+client match plus a fuzzy matter-name match (difflib) within that
+client's matters when the exact key misses. This recovers some real
+matches a strict key would miss (e.g. minor punctuation/wording
+differences) but most misses turn out to be matters that simply aren't in
+the matter list export at all, not a fuzzy-matchable naming difference --
+see OUTSTANDING_DATA_NEEDS item 1 and find_unassigned_matters() below. A
+real matter-code column on the origination export would replace this
+bridge outright. Originator Costs (100% of the originating attorney's own
+paid time on the matter, per the workbook) has no real source at all yet
+-- see item 4 -- so it defaults to $0 with that assumption stated in
+every row's data_status rather than silently dropped.
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import sys
 from collections import defaultdict
@@ -82,6 +90,13 @@ import config
 from etl.common import normalize_join_key
 
 logger = logging.getLogger("somos.etl.originations_model")
+
+# A single credit_fraction value at or above this is almost certainly a
+# data-entry unit error (e.g. "100" typed meaning 100% instead of the
+# fraction 1.0) rather than a real 100x-plus origination share -- flagged
+# separately from a genuine multi-attorney over-allocation in
+# check_percentage_conflicts() below.
+_LIKELY_UNIT_ERROR_THRESHOLD = 1.5
 
 
 def build_project_list_by_entity(matter_rows: list[dict]) -> list[dict]:
@@ -124,6 +139,124 @@ def build_origination_pct_by_matter(origination_rows: list[dict]) -> list[dict]:
         row["total_credit_fraction"] = round(sum(row.get(a, 0.0) for a in attorneys), 4)
         out.append(row)
     return sorted(out, key=lambda r: (r["entity"] or "", r["client_name"] or "", r["matter_name"] or ""))
+
+
+def build_matter_bridge(matter_rows: list[dict]) -> tuple[dict[str, str], dict[str, list[dict]]]:
+    """Two lookup structures used by bridge_matter(): an exact normalized
+    (client, matter) key -> matter_code map, and a normalized-client-name
+    -> that client's matter rows map for the fuzzy fallback."""
+    exact = {
+        normalize_join_key(r.get("client_name"), r.get("matter_name")): r.get("matter_code") for r in matter_rows
+    }
+    by_client: dict[str, list[dict]] = defaultdict(list)
+    for r in matter_rows:
+        by_client[normalize_join_key(r.get("client_name"))].append(r)
+    return exact, by_client
+
+
+def bridge_matter(
+    client_name: str | None,
+    matter_name: str | None,
+    exact_index: dict[str, str],
+    client_index: dict[str, list[dict]],
+) -> tuple[str | None, str]:
+    """Resolves a free-text (client, matter) pair from the origination
+    matrix to a real matter_code, trying an exact normalized-key match
+    first and falling back to an exact client match + fuzzy matter-name
+    match (difflib, cutoff 0.6) within that client's own matters. Returns
+    (matter_code_or_None, match_type), match_type one of "exact",
+    "fuzzy", "client_only" (client matched, no matter name came close
+    enough), or "no_client_match" (client isn't in the matter list at
+    all -- the dominant reason for a miss, see OUTSTANDING_DATA_NEEDS)."""
+    key = normalize_join_key(client_name, matter_name)
+    if key in exact_index:
+        return exact_index[key], "exact"
+    candidates = client_index.get(normalize_join_key(client_name))
+    if not candidates:
+        return None, "no_client_match"
+    names = [c["matter_name"] for c in candidates]
+    best = difflib.get_close_matches(matter_name or "", names, n=1, cutoff=0.6)
+    if not best:
+        return None, "client_only"
+    match = next(c for c in candidates if c["matter_name"] == best[0])
+    return match.get("matter_code"), "fuzzy"
+
+
+def check_percentage_conflicts(origination_rows: list[dict]) -> list[dict]:
+    """Sums every attorney's credit_fraction per matter, across ALL
+    origination-matrix rows regardless of the matrix's own Status label
+    (a status of "OK" is set per-row by whoever built the matrix and
+    isn't itself a guarantee the row's own fraction is sane), and flags
+    any matter whose total exceeds 100% -- what the user asked to be
+    checked directly rather than trusted from the source label. Returns
+    only the matters with a conflict; a clean run returns []."""
+    totals: dict[tuple, float] = defaultdict(float)
+    max_single: dict[tuple, float] = defaultdict(float)
+    for r in origination_rows:
+        key = (r["entity"], r["client_name"], r["matter_name"])
+        totals[key] += r["credit_fraction"]
+        max_single[key] = max(max_single[key], r["credit_fraction"])
+
+    conflicts = []
+    for key, total in totals.items():
+        if total <= 1.001:
+            continue
+        entity, client, matter = key
+        likely_unit_error = max_single[key] >= _LIKELY_UNIT_ERROR_THRESHOLD
+        conflicts.append(
+            {
+                "entity": entity,
+                "client_name": client,
+                "matter_name": matter,
+                "total_credit_fraction": round(total, 4),
+                "likely_cause": (
+                    f"Likely a data-entry unit error -- one attorney's fraction is {max_single[key]:g}, "
+                    "probably entered as a whole-number percentage (e.g. 100) instead of a fraction (1.0)"
+                    if likely_unit_error
+                    else "Multiple attorneys' fractions genuinely sum past 100% -- needs correction to the matrix"
+                ),
+            }
+        )
+    return sorted(conflicts, key=lambda r: -r["total_credit_fraction"])
+
+
+def find_unassigned_matters(
+    project_list: list[dict],
+    origination_rows: list[dict],
+    flagged_rows: list[dict],
+) -> dict[str, list[dict]]:
+    """Two distinct "no origination assigned" views, since they mean
+    different things:
+
+    - explicit_gap: matters the origination matrix itself flags as
+      unassigned (status "GAP -- No Origination Assigned", including
+      duplicate-row GAPs) -- these are in the matrix, just empty.
+    - not_in_matrix: real client matters (project_list, i.e. matter_list
+      minus internal/admin rows) that don't appear anywhere in the
+      origination matrix at all, by bridge_matter()'s exact+fuzzy match
+      -- nobody has even considered these for origination yet, which is
+      a bigger gap than an explicit GAP row. In practice this is most of
+      the miss: see OUTSTANDING_DATA_NEEDS item 1."""
+    explicit_gap = [f for f in flagged_rows if (f.get("status") or "").startswith("GAP")]
+
+    matrix_pairs: dict[str, list[str]] = defaultdict(list)
+    for r in origination_rows + flagged_rows:
+        matrix_pairs[normalize_join_key(r.get("client_name"))].append(r.get("matter_name") or "")
+
+    not_in_matrix = []
+    for m in project_list:
+        ck = normalize_join_key(m.get("client_name"))
+        candidates = matrix_pairs.get(ck)
+        if candidates and (
+            m["matter_name"] in candidates or difflib.get_close_matches(m["matter_name"], candidates, n=1, cutoff=0.6)
+        ):
+            continue
+        if not candidates:
+            not_in_matrix.append({**m, "reason": "Client not present in the origination matrix at all"})
+        else:
+            not_in_matrix.append({**m, "reason": "Client is in the matrix, but this matter isn't"})
+
+    return {"explicit_gap": explicit_gap, "not_in_matrix": not_in_matrix}
 
 
 def is_eligible(entity: str | None, credit_fraction: float | None, status: str | None) -> tuple[bool, str]:
@@ -175,18 +308,17 @@ def build_originations_by_matter_originator_year(
     cash_receipt_rows: list[dict],
     year: int,
 ) -> list[dict]:
-    """Applies is_eligible() and then compute_matter_takehome() (twice --
-    billed basis and collected basis) to every (attorney, matter)
-    origination-credit row. Reimbursements and Originator Costs have no
-    real source yet, so both default to $0 (stated in data_status, not
-    hidden) -- see OUTSTANDING_DATA_NEEDS. A row only gets a dollar
-    figure when its Cost Basis (billed amount, via matter_earnings) and
-    the relevant Revenue Basis are both resolved; otherwise the take-home
-    columns are None with a data_status explaining exactly what's
-    missing."""
-    matter_key_to_code = {
-        normalize_join_key(r.get("client_name"), r.get("matter_name")): r.get("matter_code") for r in matter_rows
-    }
+    """Applies is_eligible() and then compute_matter_takehome() (collected
+    revenue basis only -- see this module's docstring) to every
+    (attorney, matter) origination-credit row, bridging to a matter_code
+    via bridge_matter()'s exact+fuzzy match. Reimbursements and
+    Originator Costs have no real source yet, so both default to $0
+    (stated in data_status, not hidden) -- see OUTSTANDING_DATA_NEEDS. A
+    row only gets a dollar figure when its Cost Basis (billed amount, via
+    matter_earnings) and Collected Amount (via cash_receipts) are both
+    resolved; otherwise total_take_home/origination_credit are None with
+    a data_status explaining exactly what's missing."""
+    exact_index, client_index = build_matter_bridge(matter_rows)
     billed_by_code = {r["matter_code"]: r["invoiced_to_date"] for r in matter_earnings_rows}
 
     collected_by_key: dict[str, float] = defaultdict(float)
@@ -198,10 +330,9 @@ def build_originations_by_matter_originator_year(
 
     out = []
     for r in origination_rows:
-        key = normalize_join_key(r["client_name"], r["matter_name"])
-        matter_code = matter_key_to_code.get(key)
+        matter_code, match_type = bridge_matter(r["client_name"], r["matter_name"], exact_index, client_index)
         billed = billed_by_code.get(matter_code) if matter_code else None
-        collected = collected_by_key.get(key)
+        collected = collected_by_key.get(normalize_join_key(r["client_name"], r["matter_name"]))
 
         row = {
             "year": year,
@@ -209,13 +340,14 @@ def build_originations_by_matter_originator_year(
             "client_name": r["client_name"],
             "matter_name": r["matter_name"],
             "matched_matter_code": matter_code,
+            "match_type": match_type,
             "attorney": r["attorney"],
             "credit_fraction": r["credit_fraction"],
             "billed_amount": billed,
             "collected_amount": collected,
             "reimbursements": 0.0,
             "originator_costs": 0.0,
-            "origination_credit_billed": None,
+            "total_take_home": None,
             "origination_credit_collected": None,
         }
 
@@ -225,7 +357,9 @@ def build_originations_by_matter_originator_year(
             out.append(row)
             continue
         if matter_code is None:
-            row["data_status"] = "NEEDS MATTER CODE -- origination matter name didn't bridge to the matter list"
+            row["data_status"] = (
+                f"NEEDS MATTER CODE -- origination matter name didn't bridge to the matter list ({match_type})"
+            )
             out.append(row)
             continue
         if billed is None:
@@ -235,25 +369,19 @@ def build_originations_by_matter_originator_year(
             )
             out.append(row)
             continue
-
-        statuses = []
-        billed_result = compute_matter_takehome(billed, billed, 0.0, 0.0)
-        row["origination_credit_billed"] = round(r["credit_fraction"] * billed_result["total_take_home"], 2)
-
         if collected is None:
-            statuses.append(
-                "NEEDS COLLECTED $ -- no cash receipts bridged to this matter for this year "
-                "(collected-basis take-home not computed)"
-            )
-        else:
-            collected_result = compute_matter_takehome(collected, billed, 0.0, 0.0)
-            row["origination_credit_collected"] = round(r["credit_fraction"] * collected_result["total_take_home"], 2)
+            row["data_status"] = "NEEDS COLLECTED $ -- no cash receipts bridged to this matter for this year"
+            out.append(row)
+            continue
 
-        statuses.append(
-            "Reimbursements and Originator Costs assumed $0 (no source yet); billed amount is "
-            "matter_earnings life-to-date, not a true annual figure -- see outstanding data needs"
+        result = compute_matter_takehome(collected, billed, 0.0, 0.0)
+        row["total_take_home"] = result["total_take_home"]
+        row["origination_credit_collected"] = round(r["credit_fraction"] * result["total_take_home"], 2)
+        row["data_status"] = (
+            f"Dollarized (collected basis, {match_type} match); Reimbursements and Originator Costs assumed $0 "
+            "(no source yet); billed amount is matter_earnings life-to-date, not a true annual figure -- see "
+            "outstanding data needs"
         )
-        row["data_status"] = "; ".join(statuses)
         out.append(row)
 
     return sorted(out, key=lambda r: (r["attorney"] or "", r["entity"] or "", r["client_name"] or ""))
@@ -264,27 +392,30 @@ Outstanding data needs -- originations model
 ==============================================
 
 1. Matter code on the origination credit matrix export. It currently
-   carries only free-text client/matter names, which bridge to the
-   matter master (matter_list, matter_code) for only a minority of rows
-   by normalized name (see this run's match-rate line). Ask whoever
-   maintains the origination workbook to add the same matter code
-   AR/WIP/matter_earnings already use (e.g. "LLC25-002") as its own
-   column. This single fix unblocks everything else on this list.
+   carries only free-text client/matter names. bridge_matter() tries an
+   exact normalized-name match, then a fuzzy fallback (exact client +
+   closest matter name), which recovers a modest number of extra
+   matches -- but measured directly against the real files provided,
+   most misses are NOT a fuzzy-matchable naming difference: the client
+   itself isn't in the current Matter List export at all (see this run's
+   "not_in_matrix" count from find_unassigned_matters(), and this run's
+   match-rate line). That means the bigger fix isn't smarter string
+   matching, it's either (a) a real matter-code column on the
+   origination export, or (b) a fuller Matter List export that includes
+   closed/historical matters, if these are legacy matters that have
+   dropped off the active list. Do (a) regardless -- it unblocks
+   everything else on this list and removes the guesswork in (b).
 
-2. Billed amount by matter BY YEAR. The formula's Cost Basis and
-   billed-basis Revenue currently use matter_earnings' invoiced_to_date,
+2. Billed amount by matter BY YEAR, and collected amount by matter BY
+   YEAR. Cost Basis currently uses matter_earnings' invoiced_to_date,
    which is life-to-date and only covers matters with a not-to-exceed
-   cap set (~42 of ~315 matters firm-wide). Need an export (or GL
-   revenue account structure) that reports billed $ by matter by fiscal
-   year -- e.g. a "Billing History by Matter" report.
+   cap set (~42 of ~315 matters firm-wide). Collected Amount uses
+   cash_receipts, which is real and matter-level but needs a full fiscal
+   year of history pulled, not just the current weekly/monthly snapshot.
+   Need a "Billing History by Matter" report (or GL revenue account
+   structure) for the billed side, by fiscal year.
 
-3. A firm decision on which Revenue Basis is the one that actually pays
-   out -- billed or collected -- rather than showing both. This module
-   computes both (origination_credit_billed / origination_credit_collected)
-   because the firm hasn't picked one; they will diverge, especially for
-   slow-pay clients.
-
-4. Real Reimbursements and Originator Costs data. Both currently default
+3. Real Reimbursements and Originator Costs data. Both currently default
    to $0 in every calculated row:
      - Reimbursements (pass-through/third-party expenses to deduct from
        revenue) -- no export currently carries this at the matter level.
@@ -297,20 +428,28 @@ Outstanding data needs -- originations model
    Until both are sourced, every take-home figure understates the firm's
    actual deductions.
 
-5. Sign-off / cleanup of the origination matrix's flagged rows (see
-   originations_flagged.csv, the "Matters needing attention" table) --
-   "GAP -- No Origination Assigned" and "INCOMPLETE -- Sums to X%" rows
-   are correctly excluded as not eligible, but can't be dollarized until
-   an attorney is actually assigned or the fractions are corrected to
-   sum to 100%.
+4. Sign-off / cleanup of the origination matrix's flagged and
+   unassigned rows -- see find_unassigned_matters()'s two lists:
+     - explicit_gap: matters the matrix itself flags "GAP -- No
+       Origination Assigned" (including duplicate-row GAPs).
+     - not_in_matrix: real client matters that don't appear anywhere in
+       the matrix at all, by exact+fuzzy match -- this is typically a
+       larger number than explicit_gap and means nobody has even
+       considered these matters for origination yet.
+   Also see check_percentage_conflicts(): every matter's total assigned
+   credit_fraction is checked against 100% directly (not trusted from
+   the matrix's own Status label). A total over 100% with one attorney's
+   single fraction far above 1.0 is almost always a data-entry unit
+   error (e.g. "100" typed instead of "1.0" / 100%) -- correct at the
+   source; the model does not guess a fix.
 
-6. Historical origination-matrix snapshots. The matrix is parsed as a
+5. Historical origination-matrix snapshots. The matrix is parsed as a
    single current snapshot with no year of its own -- "originations by
    year" requires either one matrix file per fiscal year (origination
    can shift year to year, e.g. a matter reassigned to a new
    originating attorney) or a year/effective_date column on the export.
 
-7. Somos Group Mexico's origination process. MX is a real entity already
+6. Somos Group Mexico's origination process. MX is a real entity already
    in the matter list (config.ENTITIES, MATTER_CODE_ENTITY_PREFIXES["MEX"])
    with matters on the books, so it's flagged here as a future
    originatable entity -- but it has no origination matrix, matter
@@ -318,8 +457,13 @@ Outstanding data needs -- originations model
    config.ORIGINATABLE_ENTITIES (rows for it are marked "not eligible")
    until the firm builds out an origination process for it.
 
-8. config.ORIGINATION_TARGETS is still empty -- needed for any
+7. config.ORIGINATION_TARGETS is still empty -- needed for any
    actual-vs-target view once dollars are available.
+
+Resolved: the firm has decided originations run on the COLLECTED
+revenue basis only, not billed -- see this module's docstring. Billed
+Amount is still used as the Cost Basis for the Direct/Indirect Cost
+percentages, just not as an alternate payout basis.
 """
 
 
@@ -391,12 +535,22 @@ if __name__ == "__main__":
         print(f"{name}: {path}")
 
     if origination_rows:
-        eligible = sum(1 for r in origination_by_year if r["data_status"] and not r["data_status"].startswith("Not eligible"))
-        billed_dollarized = sum(1 for r in origination_by_year if r["origination_credit_billed"] is not None)
-        collected_dollarized = sum(1 for r in origination_by_year if r["origination_credit_collected"] is not None)
+        matched = sum(1 for r in origination_by_year if r["matched_matter_code"])
+        dollarized = sum(1 for r in origination_by_year if r["origination_credit_collected"] is not None)
         print(
-            f"\n{len(origination_rows)} origination-credit rows: {eligible} eligible, "
-            f"{billed_dollarized} billed-basis dollarized, {collected_dollarized} collected-basis dollarized"
+            f"\n{len(origination_rows)} origination-credit rows: {matched} matter-code-matched "
+            f"({matched / len(origination_rows):.0%}), {dollarized} dollarized (collected basis)"
+        )
+
+        conflicts = check_percentage_conflicts(origination_rows)
+        print(f"\n{len(conflicts)} matter(s) with total assigned credit_fraction over 100%:")
+        for c in conflicts:
+            print(f"  {c['client_name']} / {c['matter_name']}: {c['total_credit_fraction']:.0%} -- {c['likely_cause']}")
+
+        unassigned = find_unassigned_matters(project_list, origination_rows, origination_flagged)
+        print(
+            f"\n{len(unassigned['explicit_gap'])} matters explicitly flagged GAP in the matrix; "
+            f"{len(unassigned['not_in_matrix'])} real client matters don't appear in the matrix at all"
         )
 
     print("\n" + OUTSTANDING_DATA_NEEDS)

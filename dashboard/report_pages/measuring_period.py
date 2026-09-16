@@ -217,11 +217,11 @@ def _section_fy_vs_prior_fy():
 def _section_originations():
     st.subheader("Originations Model")
     st.caption(
-        "Formula: Total Take Home(matter, year) = (Revenue Basis - Reimbursements) "
+        "Formula: Total Take Home(matter, year) = (Collected Amount - Reimbursements) "
         "- Cost Basis x (direct % + indirect %) - Originator Costs, then x (1 - capital expense %); "
-        "Origination_$(attorney, matter, year) = credit_fraction x Total Take Home. Calculated on "
-        "both a billed and a collected revenue basis. Eligible only for matters with an 'OK' "
-        "origination-matrix status, a nonzero credit fraction, and an entity in "
+        "Origination_$(attorney, matter, year) = credit_fraction x Total Take Home. Revenue basis is "
+        "collected only (billed still sets Cost Basis for the direct/indirect %). Eligible only for "
+        "matters with an 'OK' origination-matrix status, a nonzero credit fraction, and an entity in "
         "config.ORIGINATABLE_ENTITIES (LLC/LLP -- Somos Group Mexico is a real entity with matters "
         "already on the books, flagged as a future third originatable entity, not yet built out). "
         "See config.py and etl/build_originations_model.py."
@@ -255,24 +255,32 @@ def _section_originations():
         st.plotly_chart(fig, use_container_width=True)
 
     if table_exists("originations_by_matter_originator_year"):
-        st.markdown("**Originations by matter, originator and year -- billed vs. collected**")
+        st.markdown("**Originations by matter, originator and year -- collected basis**")
         by_year = query(
-            "SELECT year, entity, client_name, matter_name, attorney, credit_fraction, "
-            "billed_amount, collected_amount, origination_credit_billed, origination_credit_collected, "
+            "SELECT year, entity, client_name, matter_name, attorney, credit_fraction, matched_matter_code, "
+            "match_type, billed_amount, collected_amount, total_take_home, origination_credit_collected, "
             "data_status FROM originations_by_matter_originator_year ORDER BY attorney, entity, client_name"
         )
         st.dataframe(by_year, use_container_width=True, hide_index=True)
-        n_eligible = int((~by_year["data_status"].str.startswith("Not eligible")).sum())
-        n_billed = int(by_year["origination_credit_billed"].notna().sum())
-        n_collected = int(by_year["origination_credit_collected"].notna().sum())
+        n_matched = int(by_year["matched_matter_code"].notna().sum())
+        n_dollarized = int(by_year["origination_credit_collected"].notna().sum())
         st.caption(
-            f"{n_eligible} of {len(by_year)} rows eligible; {n_billed} dollarized on a billed basis, "
-            f"{n_collected} on a collected basis. Billed amount is matter_earnings life-to-date, not a "
-            "true annual figure, and Reimbursements/Originator Costs are assumed $0 (no source yet) -- "
-            "see `data_status` per row and the outstanding data needs below."
+            f"{n_matched} of {len(by_year)} rows matched to a real matter code, {n_dollarized} fully "
+            "dollarized. Billed amount (Cost Basis) is matter_earnings life-to-date, not a true annual "
+            "figure, and Reimbursements/Originator Costs are assumed $0 (no source yet) -- see "
+            "`data_status` per row and the outstanding data needs below."
         )
         if not config.ORIGINATION_TARGETS:
             st.caption("`config.ORIGINATION_TARGETS` is still empty -- needed for actual-vs-target once dollars are reliable.")
+
+    if table_exists("originations") and table_exists("originations_flagged"):
+        origination_rows_df = query("SELECT * EXCLUDE (snapshot_date) FROM originations")
+        conflicts = build_originations_model.check_percentage_conflicts(origination_rows_df.to_dict("records"))
+        if conflicts:
+            st.markdown("**Matters with total assigned credit over 100%**")
+            st.dataframe(pd.DataFrame(conflicts), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No matter's assigned origination credit exceeds 100% -- checked directly, not just trusted from the matrix's own Status label.")
 
     flagged = (
         query("SELECT status, COUNT(*) AS matters FROM originations_flagged GROUP BY status ORDER BY matters DESC")
@@ -280,8 +288,20 @@ def _section_originations():
         else pd.DataFrame()
     )
     if not flagged.empty:
-        st.markdown("**Matters needing attention**")
+        st.markdown("**Matters flagged in the origination matrix (explicit GAP/INCOMPLETE/Pro Bono/duplicate)**")
         st.dataframe(flagged, use_container_width=True, hide_index=True)
+
+    if table_exists("project_list_by_entity") and table_exists("originations") and table_exists("originations_flagged"):
+        project_list_df = query("SELECT * EXCLUDE (snapshot_date) FROM project_list_by_entity").to_dict("records")
+        origination_rows_df = query("SELECT * EXCLUDE (snapshot_date) FROM originations").to_dict("records")
+        flagged_df = query("SELECT * EXCLUDE (snapshot_date) FROM originations_flagged").to_dict("records")
+        unassigned = build_originations_model.find_unassigned_matters(project_list_df, origination_rows_df, flagged_df)
+        st.markdown(
+            f"**Originations not assigned** -- {len(unassigned['explicit_gap'])} matters flagged GAP in the "
+            f"matrix, {len(unassigned['not_in_matrix'])} real client matters don't appear in the matrix at all"
+        )
+        if unassigned["not_in_matrix"]:
+            st.dataframe(pd.DataFrame(unassigned["not_in_matrix"]), use_container_width=True, hide_index=True)
 
     with st.expander("Outstanding data needs"):
         st.text(build_originations_model.OUTSTANDING_DATA_NEEDS)

@@ -235,7 +235,7 @@ ORIGINATION_TARGETS = {
 # Mall) to the penny:
 #
 #   Cost Basis(matter)        = Billed Amount(matter, year)
-#   Adjusted Revenue          = Revenue Basis(matter, year) - Reimbursements
+#   Adjusted Revenue          = Collected Amount(matter, year) - Reimbursements
 #   Direct Costs              = Cost Basis x ORIGINATION_DIRECT_COST_PCT
 #   Indirect Costs            = Cost Basis x ORIGINATION_INDIRECT_COST_PCT
 #   Gross Profit to Somos     = Adjusted Revenue - Direct Costs
@@ -249,11 +249,12 @@ ORIGINATION_TARGETS = {
 #   Attorney_Originations(attorney, year)
 #       = SUM over matter of Origination_$(attorney, matter, year)
 #
-# Revenue Basis is calculated TWICE per matter -- once using Billed
-# Amount, once using Collected (cash receipts) Amount -- since the firm
-# hasn't picked one; see build_originations_model.py's
-# originations_by_matter_originator_year output (columns suffixed
-# _billed / _collected) and item 3 of OUTSTANDING_DATA_NEEDS.
+# Revenue Basis is Collected (cash receipts) Amount only -- the firm has
+# decided originations run on money actually collected, not billed.
+# Billed Amount is still used, unchanged, as the Cost Basis that sets the
+# Direct/Indirect Cost percentages above; see
+# build_originations_model.py's module docstring and
+# originations_by_matter_originator_year output.
 #
 # Eligibility (a matter/attorney pair must clear ALL of these before the
 # formula runs at all -- see build_originations_model.py::is_eligible):
