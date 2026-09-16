@@ -296,12 +296,27 @@ def _section_originations():
         origination_rows_df = query("SELECT * EXCLUDE (snapshot_date) FROM originations").to_dict("records")
         flagged_df = query("SELECT * EXCLUDE (snapshot_date) FROM originations_flagged").to_dict("records")
         unassigned = build_originations_model.find_unassigned_matters(project_list_df, origination_rows_df, flagged_df)
+        gap_flagged = build_originations_model.flag_similar_assigned_matters(unassigned["explicit_gap"], origination_rows_df)
+        not_in_matrix_flagged = build_originations_model.flag_similar_assigned_matters(unassigned["not_in_matrix"], origination_rows_df)
+        n_gap_similar = sum(1 for r in gap_flagged if r["similar_assigned_matters"])
+        n_nim_similar = sum(1 for r in not_in_matrix_flagged if r["similar_assigned_matters"])
         st.markdown(
             f"**Originations not assigned** -- {len(unassigned['explicit_gap'])} matters flagged GAP in the "
-            f"matrix, {len(unassigned['not_in_matrix'])} real client matters don't appear in the matrix at all"
+            f"matrix ({n_gap_similar} have a similarly-named project that DOES have origination), "
+            f"{len(unassigned['not_in_matrix'])} real client matters don't appear in the matrix at all "
+            f"({n_nim_similar} have a similarly-named project that DOES have origination)"
         )
-        if unassigned["not_in_matrix"]:
-            st.dataframe(pd.DataFrame(unassigned["not_in_matrix"]), use_container_width=True, hide_index=True)
+        if gap_flagged:
+            st.markdown("**Explicitly flagged GAP in the matrix**")
+            st.dataframe(pd.DataFrame(gap_flagged).drop(columns=["similar_assigned_matters"]), use_container_width=True, hide_index=True)
+        if not_in_matrix_flagged:
+            st.markdown("**Missing from the matrix entirely**")
+            st.dataframe(pd.DataFrame(not_in_matrix_flagged).drop(columns=["similar_assigned_matters"]), use_container_width=True, hide_index=True)
+        st.caption(
+            "The `flag` column names any similarly-named project that already has origination assigned -- "
+            "checked same-client first, then any client (excluding generic/boilerplate matter names like "
+            "\"General Real Estate\" that would otherwise false-positive against every unrelated client)."
+        )
 
     with st.expander("Outstanding data needs"):
         st.text(build_originations_model.OUTSTANDING_DATA_NEEDS)

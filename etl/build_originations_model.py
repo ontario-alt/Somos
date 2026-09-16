@@ -259,6 +259,98 @@ def find_unassigned_matters(
     return {"explicit_gap": explicit_gap, "not_in_matrix": not_in_matrix}
 
 
+# Cutoffs for flag_similar_assigned_matters() below: tighter when
+# comparing across different clients (a same-name coincidence between
+# two unrelated clients is far more likely than within one client), so a
+# cross-client hit is still worth a human look without flooding the
+# report with loose matches.
+_SIMILAR_SAME_CLIENT_CUTOFF = 0.6
+_SIMILAR_ANY_CLIENT_CUTOFF = 0.85
+
+# A matter name used by this many or more DISTINCT clients among the
+# assigned matters is a generic/boilerplate bucket (seen in practice:
+# "General Real Estate", "Misc. Corporate Services", "General Advisory
+# Services") rather than a real project name -- cross-client fuzzy
+# matching against these produces pure noise (every unrelated client
+# with a same-named catch-all matter "matches"), so they're excluded
+# from the cross-client check entirely. Data-driven rather than a
+# hand-maintained denylist, since the exact boilerplate names vary by
+# firm and by practice group.
+_GENERIC_NAME_CLIENT_THRESHOLD = 3
+
+
+def flag_similar_assigned_matters(unassigned: list[dict], origination_rows: list[dict]) -> list[dict]:
+    """For every unassigned project (no origination credit, whether an
+    explicit GAP row or missing from the matrix entirely), looks for a
+    similarly-named project that DOES have origination assigned (status
+    "OK", credit_fraction > 0) -- catching the case where the same
+    project was entered twice under slightly different names/spellings,
+    with origination recorded against only one of them. Checks the same
+    client first (looser name cutoff, since a near-duplicate under one
+    client is the likely real case), then falls back to any client
+    (tighter cutoff, and excluding generic/boilerplate matter names --
+    see _GENERIC_NAME_CLIENT_THRESHOLD -- since a name coincidence across
+    two different clients needs stronger evidence before it's worth a
+    human look). Returns the unassigned rows augmented with a
+    `similar_assigned_matters` list (empty when nothing similar was
+    found) and a `flag` summary string for display."""
+    assigned_by_client: dict[str, list[dict]] = defaultdict(list)
+    assigned_all: list[dict] = []
+    clients_by_name: dict[str, set[str]] = defaultdict(set)
+    seen = set()
+    for r in origination_rows:
+        if r["status"] != "OK" or not r["credit_fraction"]:
+            continue
+        ck = normalize_join_key(r["client_name"])
+        key = (ck, r["matter_name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {"client_name": r["client_name"], "matter_name": r["matter_name"], "entity": r["entity"]}
+        assigned_by_client[ck].append(entry)
+        assigned_all.append(entry)
+        clients_by_name[r["matter_name"]].add(ck)
+
+    generic_names = {name for name, clients in clients_by_name.items() if len(clients) >= _GENERIC_NAME_CLIENT_THRESHOLD}
+    specific_assigned_all = [a for a in assigned_all if a["matter_name"] not in generic_names]
+
+    out = []
+    for u in unassigned:
+        client_name = u.get("client_name")
+        matter_name = u.get("matter_name") or ""
+        ck = normalize_join_key(client_name)
+
+        same_client_names = [a["matter_name"] for a in assigned_by_client.get(ck, [])]
+        same_client_hits = difflib.get_close_matches(matter_name, same_client_names, n=3, cutoff=_SIMILAR_SAME_CLIENT_CUTOFF)
+
+        similar = []
+        if same_client_hits:
+            similar = [
+                {**a, "match_scope": "same client"}
+                for a in assigned_by_client[ck]
+                if a["matter_name"] in same_client_hits
+            ]
+        elif matter_name not in generic_names:
+            all_names = [a["matter_name"] for a in specific_assigned_all]
+            cross_hits = difflib.get_close_matches(matter_name, all_names, n=3, cutoff=_SIMILAR_ANY_CLIENT_CUTOFF)
+            if cross_hits:
+                similar = [
+                    {**a, "match_scope": "different client -- verify this isn't the same project"}
+                    for a in specific_assigned_all
+                    if a["matter_name"] in cross_hits
+                ]
+
+        row = dict(u)
+        row["similar_assigned_matters"] = similar
+        row["flag"] = (
+            "; ".join(f"{s['client_name']} / {s['matter_name']} ({s['match_scope']})" for s in similar)
+            if similar
+            else ""
+        )
+        out.append(row)
+    return out
+
+
 def is_eligible(entity: str | None, credit_fraction: float | None, status: str | None) -> tuple[bool, str]:
     """A (matter, attorney) origination-credit row must clear all three
     of these before the take-home formula runs at all. Ineligible rows
@@ -436,6 +528,13 @@ Outstanding data needs -- originations model
        the matrix at all, by exact+fuzzy match -- this is typically a
        larger number than explicit_gap and means nobody has even
        considered these matters for origination yet.
+   flag_similar_assigned_matters() cross-checks both lists against
+   matters that DO have origination assigned, for a similarly-named
+   project (same client first, then any client excluding generic/
+   boilerplate matter names) -- some unassigned rows are really a typo'd
+   or renamed duplicate of an already-assigned matter, not a genuine gap;
+   these should be corrected/merged at the source before anyone re-keys
+   origination for what's actually the same project.
    Also see check_percentage_conflicts(): every matter's total assigned
    credit_fraction is checked against 100% directly (not trusted from
    the matrix's own Status label). A total over 100% with one attorney's
@@ -548,9 +647,15 @@ if __name__ == "__main__":
             print(f"  {c['client_name']} / {c['matter_name']}: {c['total_credit_fraction']:.0%} -- {c['likely_cause']}")
 
         unassigned = find_unassigned_matters(project_list, origination_rows, origination_flagged)
+        gap_flagged = flag_similar_assigned_matters(unassigned["explicit_gap"], origination_rows)
+        not_in_matrix_flagged = flag_similar_assigned_matters(unassigned["not_in_matrix"], origination_rows)
+        n_gap_similar = sum(1 for r in gap_flagged if r["similar_assigned_matters"])
+        n_nim_similar = sum(1 for r in not_in_matrix_flagged if r["similar_assigned_matters"])
         print(
-            f"\n{len(unassigned['explicit_gap'])} matters explicitly flagged GAP in the matrix; "
-            f"{len(unassigned['not_in_matrix'])} real client matters don't appear in the matrix at all"
+            f"\n{len(unassigned['explicit_gap'])} matters explicitly flagged GAP in the matrix "
+            f"({n_gap_similar} have a similarly-named project that DOES have origination assigned); "
+            f"{len(unassigned['not_in_matrix'])} real client matters don't appear in the matrix at all "
+            f"({n_nim_similar} have a similarly-named project that DOES have origination assigned)"
         )
 
     print("\n" + OUTSTANDING_DATA_NEEDS)
