@@ -92,6 +92,12 @@ SOURCE_FILE_PATTERNS = {
     "ar_summary": ["*AR*Summary*.csv", "*AR*Summary*.xlsx"],
     "employee_cost": ["*Employee*Cost*Rate*.xlsx"],
     "nte_tracking": ["*NTE*Tracking*.xlsx"],
+    # Company-card ("shared execs") AMEX exports -- see etl/parse_amex.py.
+    # Debit = charges, Credit = refunds/credits back to the account; same
+    # "Transaction Details" sheet layout in both, read as two separate
+    # exports rather than one because AMEX splits them that way.
+    "amex_debit": ["*AMEX*Debit*.xlsx"],
+    "amex_credit": ["*AMEX*Credit*.xlsx"],
 }
 
 # The NTE Tracking Report only covers matters with a not-to-exceed cap
@@ -227,3 +233,61 @@ EMPLOYEE_TARGETS_PATH = Path(__file__).parent / "reference" / "employee_targets.
 ORIGINATION_TARGETS = {
     # "Attorney Name": 500_000.00,
 }
+
+# ---------------------------------------------------------------------------
+# Executive expense tracker (company AMEX card, see etl/parse_amex.py and
+# dashboard/report_pages/expenses.py).
+# ---------------------------------------------------------------------------
+# Each transaction's "Category" column is exported as "Group-Subcategory"
+# (e.g. "Restaurant-Bar & Café"); expense_type is just the Group half,
+# used as the primary filter on the Expenses page. Nothing to configure --
+# this is here so the split logic isn't buried in the parser.
+EXPENSE_TYPE_FROM_CATEGORY_SEPARATOR = "-"
+
+# City/state keyword match (against the export's own City/State and
+# Country columns -- real merchant location, not inferred) used to bucket
+# each transaction for office/project location allocation. Matching is
+# case-insensitive substring against the merchant city. This is the
+# *merchant's* location, which for an online or national merchant (e.g.
+# Amazon, an airline) reflects that merchant's billing city/HQ, not
+# necessarily where the cardholder was -- the Expenses page captions this
+# rather than treating every match as travel. Add a location by adding a
+# key here; "Other" is assigned to anything that matches none.
+EXPENSE_LOCATION_KEYWORDS = {
+    "Mexico": ["mexico", "cdmx", " df"],
+    "Seattle": ["seattle"],
+    "Cleveland": ["cleveland"],
+    "San Francisco": ["san francisco"],
+    "Los Angeles": ["los angeles", "los angels", "burbank", "glendale", "pasadena", "long beach"],
+    "San Diego": ["san diego"],
+}
+
+# Categories (by their expense_type Group) whose merchant city reliably
+# reflects the merchant's own HQ/billing address rather than the
+# cardholder's actual location -- flagged on the Expenses page's location
+# breakdown as a caveat rather than silently trusted as real travel.
+EXPENSE_LOCATION_LOW_CONFIDENCE_TYPES = ["Merchandise & Supplies", "Business Services", "Communications"]
+
+# A single meal/entertainment charge at or above this amount is flagged as
+# a likely shared/group expense (covering more than the cardholder alone)
+# rather than a personal meal -- a heuristic, not a determination; the
+# Expenses page always shows the rule that triggered a flag next to it.
+SHARED_EXPENSE_CATEGORIES = ["Restaurant", "Entertainment"]
+SHARED_EXPENSE_THRESHOLD = 150.00
+
+# Categories that skew toward personal (non-business) use and are worth a
+# human's second look -- again a heuristic starting point the firm should
+# tune, not an accusation. Reviewed per-transaction on the Expenses page,
+# each with the specific rule that flagged it.
+PERSONAL_REVIEW_CATEGORIES = [
+    "Merchandise & Supplies-Groceries",
+    "Merchandise & Supplies-Department Stores",
+    "Merchandise & Supplies-Florists & Garden",
+    "Merchandise & Supplies-Mail Order",
+    "Entertainment-Theatrical Events",
+    "Entertainment-General Events",
+    "Other-Charities",
+]
+# A charge in any other category above this amount is also flagged for
+# review -- an unusually large one-off outside the categories above.
+PERSONAL_REVIEW_LARGE_AMOUNT = 1_000.00
