@@ -227,6 +227,22 @@ def _section_originations():
         "See config.py and etl/build_originations_model.py."
     )
 
+    if table_exists("originations_attorney_summary_by_entity"):
+        st.markdown(f"**Who's originating the most -- {config.ORIGINATIONS_YEAR}, by entity**")
+        summary = query(
+            "SELECT entity, attorney, credit_volume, matters, origination_credit_collected_total, "
+            "matters_dollarized, proxy_billed_total, matters_with_proxy "
+            "FROM originations_attorney_summary_by_entity ORDER BY entity, credit_volume DESC"
+        )
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+        st.caption(
+            "`credit_volume`/`matters` are real (sum of credit_fraction across OK-status matters). "
+            "`origination_credit_collected_total` is the official formula's output -- None until collected $ "
+            "data is loaded at scale. `proxy_billed_total` substitutes billed revenue where collected belongs "
+            "purely for directional signal -- ILLUSTRATIVE, not the real formula, and only covers the matters "
+            "with billed data (`matters_with_proxy`), often a minority of an attorney's book."
+        )
+
     if table_exists("project_list_by_entity"):
         st.markdown("**Project list by entity**")
         st.dataframe(
