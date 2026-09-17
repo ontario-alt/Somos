@@ -479,6 +479,67 @@ def build_originations_by_matter_originator_year(
     return sorted(out, key=lambda r: (r["attorney"] or "", r["entity"] or "", r["client_name"] or ""))
 
 
+def build_attorney_summary_by_entity(origination_rows: list[dict], by_year_rows: list[dict]) -> list[dict]:
+    """One row per (entity, attorney) -- the "who's originating the
+    most" rollup, by entity. Three columns, since only one is real
+    dollars today:
+
+    - credit_volume / matters: SUM(credit_fraction) and matter count
+      across "OK"-status rows -- real, computable from the origination
+      matrix alone, no revenue data needed.
+    - origination_credit_collected_total: SUM of the official
+      collected-basis formula's output (build_originations_by_matter_originator_year).
+      None when zero rows for that attorney/entity have dollarized yet
+      (true today for every attorney -- no cash receipts loaded at
+      scale, see OUTSTANDING_DATA_NEEDS item 2).
+    - proxy_billed_total: an ILLUSTRATIVE, non-official stand-in that
+      substitutes billed revenue where collected belongs, so there's
+      *some* directional dollar signal while collected data is
+      unavailable. Only covers matters matter_earnings has billed data
+      for, which is a minority for most attorneys -- never present this
+      as a real origination figure."""
+    credit_volume: dict[tuple, float] = defaultdict(float)
+    matters: dict[tuple, set] = defaultdict(set)
+    for r in origination_rows:
+        if r["status"] != "OK":
+            continue
+        key = (r["entity"], r["attorney"])
+        credit_volume[key] += r["credit_fraction"]
+        matters[key].add((r["client_name"], r["matter_name"]))
+
+    dollarized: dict[tuple, float] = defaultdict(float)
+    dollarized_matters: dict[tuple, set] = defaultdict(set)
+    proxy_billed: dict[tuple, float] = defaultdict(float)
+    proxy_matters: dict[tuple, set] = defaultdict(set)
+    for r in by_year_rows:
+        if r["data_status"].startswith("Not eligible"):
+            continue
+        key = (r["entity"], r["attorney"])
+        if r["origination_credit_collected"] is not None:
+            dollarized[key] += r["origination_credit_collected"]
+            dollarized_matters[key].add((r["client_name"], r["matter_name"]))
+        if r["billed_amount"] is not None:
+            proxy_billed[key] += r["credit_fraction"] * r["billed_amount"]
+            proxy_matters[key].add((r["client_name"], r["matter_name"]))
+
+    out = []
+    for key in credit_volume:
+        entity, attorney = key
+        out.append(
+            {
+                "entity": entity,
+                "attorney": attorney,
+                "credit_volume": round(credit_volume[key], 2),
+                "matters": len(matters[key]),
+                "origination_credit_collected_total": round(dollarized[key], 2) if key in dollarized else None,
+                "matters_dollarized": len(dollarized_matters.get(key, ())),
+                "proxy_billed_total": round(proxy_billed[key], 2) if key in proxy_billed else None,
+                "matters_with_proxy": len(proxy_matters.get(key, ())),
+            }
+        )
+    return sorted(out, key=lambda r: (r["entity"] or "", -r["credit_volume"]))
+
+
 OUTSTANDING_DATA_NEEDS = """\
 Outstanding data needs -- originations model
 ==============================================
@@ -574,6 +635,7 @@ def write_processed(
     project_list: list[dict],
     origination_pct: list[dict],
     origination_by_year: list[dict],
+    attorney_summary: list[dict] | None = None,
 ) -> dict[str, Path | None]:
     config.PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
     import csv
@@ -597,6 +659,8 @@ def write_processed(
     _write("project_list_by_entity", project_list)
     _write("originations_pct_by_matter", origination_pct)
     _write("originations_by_matter_originator_year", origination_by_year)
+    if attorney_summary is not None:
+        _write("originations_attorney_summary_by_entity", attorney_summary)
 
     needs_path = config.PROCESSED_DATA_DIR / "originations_outstanding_data_needs.txt"
     needs_path.write_text(OUTSTANDING_DATA_NEEDS, encoding="utf-8")
@@ -606,9 +670,7 @@ def write_processed(
 
 
 if __name__ == "__main__":
-    import datetime
-
-    from etl import parse_matter_earnings, parse_matter_list, parse_originations, parse_receipts
+    from etl import parse_matter_earnings, parse_matter_earnings_full, parse_matter_list, parse_originations, parse_receipts
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -620,7 +682,9 @@ if __name__ == "__main__":
 
     matter_rows = parse_matter_list.parse()
     origination_rows, origination_flagged = parse_originations.parse()
-    matter_earnings_rows = parse_matter_earnings.parse()
+    matter_earnings_by_code = {r["matter_code"]: r for r in parse_matter_earnings.parse()}
+    matter_earnings_by_code.update({r["matter_code"]: r for r in parse_matter_earnings_full.parse()})
+    matter_earnings_rows = list(matter_earnings_by_code.values())
     try:
         cash_receipt_rows = parse_receipts.parse()
     except FileNotFoundError:
@@ -628,14 +692,18 @@ if __name__ == "__main__":
 
     project_list = build_project_list_by_entity(matter_rows)
     origination_pct = build_origination_pct_by_matter(origination_rows)
-    year = datetime.date.today().year
     origination_by_year = build_originations_by_matter_originator_year(
-        origination_rows, matter_rows, matter_earnings_rows, cash_receipt_rows, year
+        origination_rows, matter_rows, matter_earnings_rows, cash_receipt_rows, config.ORIGINATIONS_YEAR
     )
+    attorney_summary = build_attorney_summary_by_entity(origination_rows, origination_by_year)
 
-    paths = write_processed(project_list, origination_pct, origination_by_year)
+    paths = write_processed(project_list, origination_pct, origination_by_year, attorney_summary)
     for name, path in paths.items():
         print(f"{name}: {path}")
+
+    print(f"\nAttorney summary by entity ({config.ORIGINATIONS_YEAR}):")
+    for row in attorney_summary:
+        print(f"  {row['entity']:22s} {row['attorney']:15s} {row['credit_volume']:7.2f} credits, {row['matters']:3d} matters")
 
     if origination_rows:
         matched = sum(1 for r in origination_by_year if r["matched_matter_code"])

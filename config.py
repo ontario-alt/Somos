@@ -284,3 +284,11 @@ ORIGINATABLE_ENTITIES = [
     "Somos Group LLC",
     "Somos Law Group LLP",
 ]
+
+# The originations model runs for one fixed year rather than "whatever
+# year the build happens to run in" -- the firm has said it doesn't care
+# about prior years right now, and a snapshot_date.year default would
+# silently roll the whole report to 2027 the moment the calendar turns,
+# which is the opposite of what was asked for. Change this by hand when
+# the firm is ready to look at a different year.
+ORIGINATIONS_YEAR = 2026
