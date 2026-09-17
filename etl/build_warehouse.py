@@ -38,6 +38,7 @@ import pandas as pd
 
 import config
 from etl import (
+    parse_amex,
     parse_ap,
     parse_ar,
     parse_ar_aging_workbook,
@@ -62,7 +63,11 @@ logger = logging.getLogger("somos.etl.warehouse")
 # snapshot (e.g. no AR comments this period) -- pandas would otherwise
 # infer an ambiguous dtype from all-NaN data and DuckDB could pick the
 # wrong column type. Force these to string explicitly.
-_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no", "client_name_confidence", "target_type"}
+_TEXT_COLUMNS = {
+    "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
+    "client_name_confidence", "target_type", "account_last4", "merchant_city", "merchant_state",
+    "merchant_country", "category", "expense_type", "personal_review_reason", "reference", "vendor",
+}
 
 
 def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
@@ -176,6 +181,16 @@ def build(snapshot_date: date | None = None) -> Path:
     parse_ap.write_processed(ap_rows, disbursement_rows)
     _create_table(con, "ap_aging", ap_rows, snapshot_date)
     _create_table(con, "cash_disbursements", disbursement_rows, snapshot_date)
+
+    # --- Company card (shared execs' AMEX) transactions -----------------
+    # Each row already carries its own txn_date, so a fresh export
+    # (covering the same or a wider date range than last time) upserts by
+    # actual transaction date rather than collapsing everything to today's
+    # snapshot_date -- re-running against a newer "to date" export just
+    # replaces the dates it covers.
+    amex_rows = parse_amex.parse()
+    parse_amex.write_processed(amex_rows)
+    _create_table(con, "card_transactions", amex_rows, snapshot_date, snapshot_date_col="txn_date")
 
     # --- Earnings & labor (stub until sample export provided) ---------
     earnings_rows = parse_earnings.parse()
