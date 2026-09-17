@@ -66,7 +66,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 _TEXT_COLUMNS = {
     "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
     "client_name_confidence", "target_type", "account_last4", "merchant_city", "merchant_state",
-    "merchant_country", "category", "expense_type", "personal_review_reason", "reference",
+    "merchant_country", "category", "expense_type", "personal_review_reason", "reference", "vendor",
 }
 
 

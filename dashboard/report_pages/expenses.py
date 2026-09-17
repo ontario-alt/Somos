@@ -3,10 +3,15 @@ Executive Expenses -- company AMEX card shared by execs (see
 etl/parse_amex.py for the source: AMEX's own charge/refund exports,
 combined into one `card_transactions` table).
 
-Filters (person, expense type, location, shared-only) all operate on the
-same underlying query, so every section below -- summary KPIs, by-person,
-by-type, by-location, and the two review lists -- reflects the current
-filter selection, not just the detail table at the bottom.
+Filters (person, expense type, location, shared-only, vendor search) all
+operate on the same underlying query, so every section below -- summary
+KPIs, by-person, by-type, by-location, the location x type allocation
+matrix, by-vendor, and the two review lists -- reflects the current filter
+selection, not just the detail table at the bottom. The one exception is
+Recurring Charges / Overhead Review, which deliberately looks across every
+executive and location regardless of the filter bar, since the point is
+to catch every vendor's full monthly pattern, not just what's currently
+filtered in.
 
 Two review lists are heuristics, not determinations, and are captioned as
 such everywhere they appear:
@@ -65,6 +70,11 @@ def render():
             ["All", "Shared/group only", "Individual only"],
             help="Shared/group = flagged as a likely multi-person meal/entertainment charge (see caption below). Not a real cost-split -- the export has no attendee data.",
         )
+        vendor_search = st.text_input(
+            "Vendor / description contains",
+            placeholder="e.g. Uber, Southwest, Amazon, Four Seasons...",
+            help="Matches against the cleaned-up vendor name and the raw transaction description (see 'By Vendor' below for the full vendor-cleanup caveat).",
+        )
 
     if not sel_people or not sel_types or not sel_locations:
         st.info("Select at least one executive, expense type, and location to see results.")
@@ -76,10 +86,14 @@ def render():
         where.append("shared_candidate")
     elif allocation_filter == "Individual only":
         where.append("NOT shared_candidate")
+    if vendor_search.strip():
+        where.append("(vendor ILIKE ? OR description ILIKE ?)")
+        needle = f"%{vendor_search.strip()}%"
+        params += [needle, needle]
 
     df = query(
         f"""
-        SELECT txn_date, description, card_member, amount, transaction_type, category,
+        SELECT txn_date, description, vendor, card_member, amount, transaction_type, category,
                COALESCE(expense_type, 'Unknown') AS expense_type, merchant_city, merchant_state,
                merchant_country, location_bucket, location_low_confidence, shared_candidate,
                personal_review, personal_review_reason, reference
@@ -101,6 +115,12 @@ def render():
     _section_by_type(df)
     st.divider()
     _section_by_location(df)
+    st.divider()
+    _section_allocation_matrix(df)
+    st.divider()
+    _section_by_vendor(df)
+    st.divider()
+    _section_recurring_overhead()
     st.divider()
     _section_shared(df)
     st.divider()
@@ -244,6 +264,134 @@ def _section_by_location(df: pd.DataFrame):
     )
 
 
+def _section_allocation_matrix(df: pd.DataFrame):
+    st.subheader("Cost Allocation Matrix -- Location x Expense Type")
+    charges = df[df["transaction_type"].isin(["charge", "refund"])]
+    if charges.empty:
+        st.info("No transactions match the current filters.")
+        return
+    pivot = charges.pivot_table(index="location_bucket", columns="expense_type", values="amount", aggfunc="sum", fill_value=0)
+    pivot = pivot.reindex(list(config.EXPENSE_LOCATION_KEYWORDS.keys()) + ["Other"]).dropna(how="all").fillna(0)
+    pivot["Total"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("Total", ascending=False)
+    pivot.loc["TOTAL -- ALL LOCATIONS"] = pivot.sum(numeric_only=True)
+    st.dataframe(
+        pivot.reset_index().rename(columns={"location_bucket": "Location"}),
+        use_container_width=True,
+        hide_index=True,
+        column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in pivot.columns},
+    )
+    st.caption(
+        "One cell per (location, expense type) combination -- the starting point for splitting "
+        "shared-exec card spend across office/project cost centers. Same location caveat as "
+        "above: a cell is real merchant-city spend, not a confirmed project charge, so treat this "
+        "as an allocation proposal to sign off on, not a finished allocation."
+    )
+
+
+def _section_by_vendor(df: pd.DataFrame):
+    st.subheader("By Vendor")
+    charges = df[df["transaction_type"].isin(["charge", "refund"])]
+    if charges.empty:
+        st.info("No transactions match the current filters.")
+        return
+    by_vendor = (
+        charges.groupby("vendor")
+        .agg(
+            net=("amount", "sum"),
+            transactions=("amount", "count"),
+            first_seen=("txn_date", "min"),
+            last_seen=("txn_date", "max"),
+            expense_type=("expense_type", lambda s: " / ".join(sorted(set(s)))),
+        )
+        .reset_index()
+        .sort_values("net", ascending=False)
+    )
+    by_vendor["avg"] = by_vendor["net"] / by_vendor["transactions"]
+
+    col1, col2 = st.columns([1.3, 1])
+    with col1:
+        st.plotly_chart(
+            ranked_bar(by_vendor, label_col="vendor", value_col="net", top_n=15, title="Top 15 Vendors by Net Spend"),
+            use_container_width=True,
+        )
+    with col2:
+        st.dataframe(
+            by_vendor.head(15).rename(
+                columns={
+                    "vendor": "Vendor", "net": "Net", "transactions": "Transactions", "avg": "Avg/Txn",
+                    "expense_type": "Type(s)", "first_seen": "First", "last_seen": "Last",
+                }
+            )[["Vendor", "Net", "Transactions", "Avg/Txn", "Type(s)"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in ["Net", "Avg/Txn"]},
+        )
+    with st.expander(f"All {len(by_vendor)} vendors in current filters"):
+        st.dataframe(
+            by_vendor.rename(
+                columns={
+                    "vendor": "Vendor", "net": "Net", "transactions": "Transactions", "avg": "Avg/Txn",
+                    "expense_type": "Type(s)", "first_seen": "First", "last_seen": "Last",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+            column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in ["Net", "Avg/Txn"]},
+        )
+    st.caption(
+        "Vendor is cleaned up from the export's own Description column (POS-processor prefixes "
+        "like \"AplPay\"/\"TST*\" and the merchant city/state stripped off -- see "
+        "etl/parse_amex.py:_normalize_vendor) -- a best-effort grouping for BD/overhead review, "
+        "not a merchant-ID match. AMEX truncates Description to ~20 characters, so some vendor "
+        "names below are cut short (e.g. a hotel property name) and a few spellings of the same "
+        "vendor may still show as separate rows; use the vendor search box above to pull every "
+        "transaction for one and confirm before treating a total as final."
+    )
+
+
+def _section_recurring_overhead():
+    st.subheader("Recurring Charges -- Overhead Review")
+    st.caption("Independent of the filters above -- this looks across every executive/location to find the full pattern for each vendor.")
+    df = query(
+        """
+        SELECT vendor, card_member,
+               COUNT(DISTINCT date_trunc('month', txn_date)) AS months_active,
+               SUM(amount) AS net, COUNT(*) AS transactions,
+               MIN(txn_date) AS first_seen, MAX(txn_date) AS last_seen
+        FROM card_transactions
+        WHERE transaction_type = 'charge'
+        GROUP BY vendor, card_member
+        HAVING COUNT(DISTINCT date_trunc('month', txn_date)) >= ?
+        ORDER BY net DESC
+        """,
+        [config.RECURRING_VENDOR_MIN_MONTHS],
+    )
+    if df.empty:
+        st.info(f"No vendor recurs in {config.RECURRING_VENDOR_MIN_MONTHS}+ distinct months yet.")
+        return
+    df["avg_per_month"] = df["net"] / df["months_active"]
+    st.dataframe(
+        df.rename(
+            columns={
+                "vendor": "Vendor", "card_member": "Executive", "months_active": "Months Active",
+                "net": "Total Spend", "transactions": "Transactions", "avg_per_month": "Avg/Month",
+                "first_seen": "First", "last_seen": "Last",
+            }
+        )[["Vendor", "Executive", "Months Active", "Total Spend", "Avg/Month", "Transactions", "First", "Last"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={c: st.column_config.NumberColumn(format="$%,.0f") for c in ["Total Spend", "Avg/Month"]},
+    )
+    st.caption(
+        f"A vendor charging the same person in {config.RECURRING_VENDOR_MIN_MONTHS}+ distinct "
+        "calendar months (config.RECURRING_VENDOR_MIN_MONTHS) -- typically a subscription/SaaS "
+        "seat, a recurring service, or a habitual transit/parking spot -- rather than one-off BD "
+        "or travel spend. This is the list to run a use-it-or-cut-it review against for overhead "
+        "reduction; it isn't itself a recommendation to cancel anything."
+    )
+
+
 def _section_shared(df: pd.DataFrame):
     st.subheader("Shared / Group Expense Candidates")
     shared = df[df["shared_candidate"]].sort_values("amount", ascending=False)
@@ -308,11 +456,11 @@ def _section_detail(df: pd.DataFrame):
     with st.expander(f"Transaction detail ({len(df)} transactions matching current filters)"):
         st.dataframe(
             df[
-                ["txn_date", "card_member", "description", "expense_type", "category", "amount", "transaction_type",
+                ["txn_date", "card_member", "vendor", "description", "expense_type", "category", "amount", "transaction_type",
                  "merchant_city", "merchant_state", "location_bucket", "shared_candidate", "personal_review", "reference"]
             ].rename(
                 columns={
-                    "txn_date": "Date", "card_member": "Executive", "description": "Description",
+                    "txn_date": "Date", "card_member": "Executive", "vendor": "Vendor", "description": "Description",
                     "expense_type": "Type", "category": "Category", "amount": "Amount",
                     "transaction_type": "Txn Type", "merchant_city": "City", "merchant_state": "State",
                     "location_bucket": "Location", "shared_candidate": "Shared?", "personal_review": "Review?",

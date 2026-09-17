@@ -17,7 +17,7 @@ on that column, not a separate parse.
 
 Output grain: one row per transaction line:
   txn_date, description, card_member, account_last4, amount,
-  transaction_type ('charge'/'credit'), category, expense_type,
+  transaction_type ('charge'/'credit'), category, expense_type, vendor,
   merchant_city, merchant_state, merchant_country, location_bucket,
   location_low_confidence, shared_candidate, personal_review,
   personal_review_reason, reference, source_file
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -37,6 +38,34 @@ import config
 from etl.common import find_all_files
 
 logger = logging.getLogger("somos.etl.amex")
+
+# AMEX's Description column is "merchant name" and "city/state" run
+# together with no separator and truncated to ~20 characters (e.g.
+# "AplPay GRUMPY BEAN  Seattle             WA"), so a clean vendor name
+# needs the city/state stripped back off using the row's own City/State
+# column (parsed separately, not truncated) plus a few known point-of-sale
+# processor prefixes (Apple Pay, Square, Toast, Instacart's aggregator
+# code, PayPal) stripped from the front. This is a best-effort cleanup for
+# grouping/reporting, not a merchant-ID match -- two spellings of the same
+# vendor (e.g. a hotel chain's city-specific property name) still count as
+# different vendors below; treat "By Vendor" as a starting point for BD/
+# overhead review, not an authoritative merchant roster.
+_POS_PREFIX_RE = re.compile(r"^(AplPay|TST\*|IC\*|SQ\s*\*|PY\s*\*|BT\*|GTC/)\s*", re.IGNORECASE)
+_TRAILING_NUMBER_RE = re.compile(r"\s+\d{3,}$")
+
+
+def _normalize_vendor(description: str, city: str, state: str) -> str:
+    v = description
+    for token in filter(None, [city, state]):
+        # Case-insensitive strip of the city/state substring wherever it
+        # falls (usually the tail, since Description = name + city + state
+        # concatenated) -- a plain .replace keeps this simple and safe
+        # since these tokens rarely appear as part of a real merchant name.
+        v = re.sub(re.escape(token), "", v, flags=re.IGNORECASE)
+    v = _POS_PREFIX_RE.sub("", v)
+    v = _TRAILING_NUMBER_RE.sub("", v)
+    v = re.sub(r"\s{2,}", " ", v).strip(" -*")
+    return v or description.strip()
 
 _COLS = [
     "txn_date",
@@ -138,10 +167,12 @@ def _parse_one(path: Path) -> list[dict]:
         else:
             transaction_type = "payment"
 
+        description = (row.get("description") or "").strip()
         out.append(
             {
                 "txn_date": txn_date,
-                "description": (row.get("description") or "").strip(),
+                "description": description,
+                "vendor": _normalize_vendor(description, city, state),
                 "card_member": (row.get("card_member") or "").strip().title(),
                 "account_last4": (row.get("account_number") or "").strip().lstrip("-") or None,
                 "amount": round(amount, 2),

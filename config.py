@@ -291,3 +291,10 @@ PERSONAL_REVIEW_CATEGORIES = [
 # A charge in any other category above this amount is also flagged for
 # review -- an unusually large one-off outside the categories above.
 PERSONAL_REVIEW_LARGE_AMOUNT = 1_000.00
+
+# A vendor charging in at least this many distinct calendar months is
+# treated as a recurring/subscription charge on the Expenses page's
+# overhead-review list (e.g. Zoom, Adobe, Microsoft 365) rather than a
+# one-off -- useful for spotting overhead to trim, separate from one-time
+# travel/BD spend. Tune as more months of history accumulate.
+RECURRING_VENDOR_MIN_MONTHS = 3
