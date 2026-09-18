@@ -92,6 +92,13 @@ SOURCE_FILE_PATTERNS = {
     "ar_summary": ["*AR*Summary*.csv", "*AR*Summary*.xlsx"],
     "employee_cost": ["*Employee*Cost*Rate*.xlsx"],
     "nte_tracking": ["*NTE*Tracking*.xlsx"],
+    # Plain "Matter Earnings" export (etl/parse_matter_earnings_full.py) --
+    # a different, much less partial report than the NTE Tracking Report
+    # above: every matter with JTD activity, not just ones with a
+    # not-to-exceed cap set. Pattern requires "Matter" immediately next
+    # to "Earnings" (not just both words somewhere in the name) so it
+    # doesn't also match a differently-worded NTE Tracking Report file.
+    "matter_earnings_full": ["*Matter_Earnings*.xlsx", "*Matter Earnings*.xlsx"],
 }
 
 # The NTE Tracking Report only covers matters with a not-to-exceed cap
@@ -227,3 +234,61 @@ EMPLOYEE_TARGETS_PATH = Path(__file__).parent / "reference" / "employee_targets.
 ORIGINATION_TARGETS = {
     # "Attorney Name": 500_000.00,
 }
+
+# Origination formula -- the firm's own per-matter waterfall (from the
+# "Originations Model" workbook), reproduced exactly in
+# etl/build_originations_model.py::compute_matter_takehome and verified
+# there against the workbook's own worked example (Steerpoint / Escondido
+# Mall) to the penny:
+#
+#   Cost Basis(matter)        = Billed Amount(matter, year)
+#   Adjusted Revenue          = Collected Amount(matter, year) - Reimbursements
+#   Direct Costs              = Cost Basis x ORIGINATION_DIRECT_COST_PCT
+#   Indirect Costs            = Cost Basis x ORIGINATION_INDIRECT_COST_PCT
+#   Gross Profit to Somos     = Adjusted Revenue - Direct Costs
+#                               - Originator Costs - Indirect Costs
+#   Capital Expense Adj.      = Gross Profit to Somos x ORIGINATION_CAPITAL_EXPENSE_PCT
+#   Total Take Home (matter)  = Gross Profit to Somos - Capital Expense Adj.
+#
+#   Origination_$(attorney, matter, year)
+#       = credit_fraction(attorney, matter) x Total Take Home(matter, year)
+#
+#   Attorney_Originations(attorney, year)
+#       = SUM over matter of Origination_$(attorney, matter, year)
+#
+# Revenue Basis is Collected (cash receipts) Amount only -- the firm has
+# decided originations run on money actually collected, not billed.
+# Billed Amount is still used, unchanged, as the Cost Basis that sets the
+# Direct/Indirect Cost percentages above; see
+# build_originations_model.py's module docstring and
+# originations_by_matter_originator_year output.
+#
+# Eligibility (a matter/attorney pair must clear ALL of these before the
+# formula runs at all -- see build_originations_model.py::is_eligible):
+#   - origination matrix status is "OK" (not a GAP, INCOMPLETE, Pro Bono,
+#     or duplicate row)
+#   - credit_fraction > 0
+#   - entity is in ORIGINATABLE_ENTITIES below
+ORIGINATION_DIRECT_COST_PCT = 0.30
+ORIGINATION_INDIRECT_COST_PCT = 0.35
+ORIGINATION_CAPITAL_EXPENSE_PCT = 0.20
+
+# Entities whose matters currently go through the origination-credit
+# process. Somos Group Mexico is a real entity (ENTITIES above,
+# MATTER_CODE_ENTITY_PREFIXES["MEX"]) with matters already appearing in
+# the matter list export, so it's a future originatable entity worth
+# planning for -- but it has no origination matrix, matter_earnings, or
+# revenue data yet, so it's deliberately left out of this list until
+# that's built out.
+ORIGINATABLE_ENTITIES = [
+    "Somos Group LLC",
+    "Somos Law Group LLP",
+]
+
+# The originations model runs for one fixed year rather than "whatever
+# year the build happens to run in" -- the firm has said it doesn't care
+# about prior years right now, and a snapshot_date.year default would
+# silently roll the whole report to 2027 the moment the calendar turns,
+# which is the opposite of what was asked for. Change this by hand when
+# the firm is ready to look at a different year.
+ORIGINATIONS_YEAR = 2026

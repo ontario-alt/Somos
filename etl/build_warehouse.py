@@ -38,6 +38,7 @@ import pandas as pd
 
 import config
 from etl import (
+    build_originations_model,
     parse_ap,
     parse_ar,
     parse_ar_aging_workbook,
@@ -49,6 +50,7 @@ from etl import (
     parse_employee_targets,
     parse_gl,
     parse_matter_earnings,
+    parse_matter_earnings_full,
     parse_matter_list,
     parse_originations,
     parse_receipts,
@@ -163,7 +165,9 @@ def build(snapshot_date: date | None = None) -> Path:
     except FileNotFoundError as e:
         logger.warning(str(e))
 
-    # --- Cash receipts (supplementary, weekly cash page) --------------
+    # --- Cash receipts (supplementary, weekly cash page; also the
+    # originations model's collected-basis revenue source) -------------
+    receipt_rows: list[dict] = []
     try:
         receipt_rows = parse_receipts.parse()
         parse_receipts.write_processed(receipt_rows)
@@ -209,9 +213,17 @@ def build(snapshot_date: date | None = None) -> Path:
     parse_employee_targets.write_processed(target_rows)
     _create_table(con, "employee_targets", target_rows, snapshot_date)
 
-    # --- Matter earnings (NTE-tracked matters only -- real revenue/profit) --
-    matter_earnings_rows = parse_matter_earnings.parse()
-    parse_matter_earnings.write_processed(matter_earnings_rows)
+    # --- Matter earnings: NTE Tracking Report (NTE-tracked matters only)
+    # merged with the plain Matter Earnings report (every matter with JTD
+    # activity, a much less partial source) -- the latter wins on any
+    # matter code both report, since it's the less-filtered figure. -----
+    nte_earnings_rows = parse_matter_earnings.parse()
+    parse_matter_earnings.write_processed(nte_earnings_rows)
+    full_earnings_rows = parse_matter_earnings_full.parse()
+    parse_matter_earnings_full.write_processed(full_earnings_rows)
+    matter_earnings_by_code = {r["matter_code"]: r for r in nte_earnings_rows}
+    matter_earnings_by_code.update({r["matter_code"]: r for r in full_earnings_rows})
+    matter_earnings_rows = list(matter_earnings_by_code.values())
     _create_table(con, "matter_earnings", matter_earnings_rows, snapshot_date)
 
     # --- Matter master list (matter code -> client -> entity -> org) ----
@@ -224,6 +236,26 @@ def build(snapshot_date: date | None = None) -> Path:
     parse_originations.write_processed(origination_rows, origination_flagged)
     _create_table(con, "originations", origination_rows, snapshot_date)
     _create_table(con, "originations_flagged", origination_flagged, snapshot_date)
+
+    # --- Originations model (project list by entity, % origination by
+    # matter, and the dollarized-where-possible matter/originator/year
+    # rollup -- see etl/build_originations_model.py for the formula and
+    # the outstanding-data-needs list) -------------------------------
+    project_list_rows = build_originations_model.build_project_list_by_entity(matter_rows)
+    origination_pct_rows = build_originations_model.build_origination_pct_by_matter(origination_rows)
+    origination_by_year_rows = build_originations_model.build_originations_by_matter_originator_year(
+        origination_rows, matter_rows, matter_earnings_rows, receipt_rows, config.ORIGINATIONS_YEAR
+    )
+    attorney_summary_rows = build_originations_model.build_attorney_summary_by_entity(
+        origination_rows, origination_by_year_rows
+    )
+    build_originations_model.write_processed(
+        project_list_rows, origination_pct_rows, origination_by_year_rows, attorney_summary_rows
+    )
+    _create_table(con, "project_list_by_entity", project_list_rows, snapshot_date)
+    _create_table(con, "originations_pct_by_matter", origination_pct_rows, snapshot_date)
+    _create_table(con, "originations_by_matter_originator_year", origination_by_year_rows, snapshot_date)
+    _create_table(con, "originations_attorney_summary_by_entity", attorney_summary_rows, snapshot_date)
 
     # --- Timekeeper hours (measuring period, per entity) -----------------
     tk_hours_rows = parse_timekeeper_hours.parse()
