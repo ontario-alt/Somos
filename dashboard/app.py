@@ -16,7 +16,7 @@ import streamlit as st
 
 import config
 from dashboard.data import warehouse_last_built
-from dashboard.report_pages import measuring_period, monthly, quarterly, weekly
+from dashboard.report_pages import measuring_period, monthly, pricing, quarterly, weekly
 
 st.set_page_config(page_title="Somos Group Executive Dashboard", layout="wide", page_icon="\U0001f4ca")
 
@@ -45,7 +45,7 @@ with st.sidebar:
     st.divider()
     page_name = st.radio(
         "Report",
-        ["Monthly", "Weekly", "Quarterly", "Measuring Period"],
+        ["Monthly", "Weekly", "Quarterly", "Measuring Period", "Project Pricing"],
         label_visibility="collapsed",
     )
 
@@ -54,6 +54,7 @@ pages = {
     "Weekly": weekly.render,
     "Quarterly": quarterly.render,
     "Measuring Period": measuring_period.render,
+    "Project Pricing": pricing.render,
 }
 
 try:

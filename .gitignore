@@ -8,6 +8,11 @@ data/processed/*
 !data/processed/.gitkeep
 *.duckdb
 
+# Project Pricing tool -- saved pricing projects are real client budget
+# data, never committed.
+data/pricing/*
+!data/pricing/.gitkeep
+
 # Real employee names -- hand-maintained locally (etl/parse_employee_targets.py
 # auto-generates a starter the first time build_warehouse.py runs if this
 # is missing, so nothing is lost by not committing it).

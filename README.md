@@ -64,6 +64,43 @@ Drop the fresh AR/AP aging and cash receipts exports into the same
 `data/raw/` folder and re-run `python etl/build_warehouse.py`. It's the
 same command either way; the weekly page just reads whatever's newest.
 
+## Project Pricing tool
+
+A separate page from the warehouse-backed reporting above -- doesn't need
+`build_warehouse.py` to have been run. Upload a project budget/pricing
+workbook (`.xlsx`) on the Project Pricing page and it's parsed into
+Somos's own rates plus any subcontracted firm found on the sheet (a role
+column like `S&A Principal` or `Parity Associate 1` is split into
+firm="S&A"/"Parity" and role="Principal"/"Associate 1"; a plain column
+like `Principal` with no firm prefix is assumed to be Somos's own rate --
+see `config.HOME_FIRM_NAME`), broken into phases and line items with
+hours per role.
+
+From there:
+- Toggle any role, firm (by disabling all its roles), phase, or line
+  item on/off -- the total recomputes immediately.
+- Edit rates, hours, or add a brand-new subcontracted firm's roles
+  directly in the tables (add a row with a different `Firm`).
+- Add flat direct expenses (materials, travel, markup) per firm.
+- Multiple projects can be uploaded and marked "active" at once for a
+  combined total (e.g. a pipeline view or comparing scenarios).
+- "Export summary" downloads a generated Budget Summary workbook (firm
+  labor/expenses/totals, phase breakdown, proposal total) -- a clean
+  output in the same spirit as a hand-built proposal summary tab, not a
+  copy of whatever the source sheet looked like.
+
+The uploaded sheet is only a starting point -- costs are always computed
+live from this tool's own rates/hours/toggles (`dashboard/pricing_store.py`),
+never from whatever total the source workbook displayed, since two real
+sample sheets already used very different layouts and the source's own
+task-level totals didn't always reconcile to their own line items. See
+`etl/parse_pricing_sheet.py`'s docstring for how it locates the rate
+table and tells a task/phase header apart from a numbered subtask
+(`1.1`) regardless of the sheet's column layout.
+
+Saved pricing projects live as JSON under `data/pricing/` -- real client
+budget data, gitignored like the rest of `data/`.
+
 ## What's implemented vs. stubbed
 
 | Source | Status |

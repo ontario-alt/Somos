@@ -227,3 +227,18 @@ EMPLOYEE_TARGETS_PATH = Path(__file__).parent / "reference" / "employee_targets.
 ORIGINATION_TARGETS = {
     # "Attorney Name": 500_000.00,
 }
+
+# ---------------------------------------------------------------------------
+# Project Pricing tool
+# ---------------------------------------------------------------------------
+# Saved pricing projects (uploaded/edited budget scenarios) live here as one
+# JSON file per project -- real client budgets, so gitignored like
+# data/raw and data/processed. Override via SOMOS_PRICING_DIR if needed.
+PRICING_DATA_DIR = Path(
+    os.environ.get("SOMOS_PRICING_DIR", Path(__file__).parent / "data" / "pricing")
+).expanduser()
+
+# Somos's own firm name -- roles found in an uploaded sheet with no firm
+# prefix (e.g. plain "Principal", "Manager") are assumed to be Somos's own
+# rates rather than a subcontractor's.
+HOME_FIRM_NAME = "Somos"
