@@ -16,13 +16,20 @@ A project's own uploaded workbook is read only as a starting point (see
 parse_pricing_sheet's docstring for why the parser doesn't chase every
 possible layout) -- the numbers actually driving the total always come
 from this tool's own rates/hours/toggles, not from whatever the sheet
-displayed. "Export summary" produces a Budget Summary tab (firm labor,
-expenses, firm totals, proposal total) in that same spirit, as a
-generated output rather than a parsed one.
+displayed.
+
+The tool's real deliverable is the client-facing work product: "Export
+Excel workbook" and "Export PDF proposal" (dashboard/pricing_export.py)
+build a Somos-branded, fully laid-out proposal -- cover page, rates
+table, a phase/line-item budget grid with live formulas, a budget
+summary, and a scope-exclusions page -- in the same spirit as the real
+Western U and Project Eagle budgets this tool was built against.
+Anything toggled off in the tool shows up struck through with its
+would-be cost rather than disappearing, so the export documents the
+choices made, not just the bottom line.
 """
 from __future__ import annotations
 
-import io
 import sys
 from pathlib import Path
 
@@ -32,7 +39,7 @@ import pandas as pd
 import streamlit as st
 
 import config
-from dashboard import pricing_store as ps
+from dashboard import pricing_export, pricing_store as ps
 from dashboard.charts.kpi_cards import kpi_row
 from dashboard.charts.theme import CATEGORICAL, fmt_currency
 
@@ -138,17 +145,54 @@ def _section_project_list(projects: list[dict]):
 
 def _section_editor(project: dict):
     st.subheader(f"Editing: {project['project_name']}")
-    name_col, add_col = st.columns([4, 1])
-    with name_col:
-        new_name = st.text_input("Project name", value=project["project_name"], key=f"name_{project['id']}")
-        if new_name != project["project_name"]:
-            project["project_name"] = new_name
-            ps.save_project(project)
+    new_name = st.text_input("Project name", value=project["project_name"], key=f"name_{project['id']}")
+    if new_name != project["project_name"]:
+        project["project_name"] = new_name
+        ps.save_project(project)
 
+    _section_proposal_details(project)
     _section_roles(project)
     _section_phases(project)
     _section_expenses(project)
     _section_totals(project)
+
+
+def _section_proposal_details(project: dict):
+    st.markdown("#### Proposal details")
+    st.caption("Feeds the cover page, budget grid, and exclusions page of the client-facing export.")
+    changed = False
+
+    client = st.text_input("Client name", value=project.get("client_name", ""), key=f"client_{project['id']}")
+    if client != project.get("client_name", ""):
+        project["client_name"] = client
+        changed = True
+
+    notes = st.text_area(
+        "Cover page summary (optional)",
+        value=project.get("notes", ""),
+        key=f"notes_{project['id']}",
+        help="A short paragraph introducing the engagement -- shown on the cover page of both exports.",
+        height=80,
+    )
+    if notes != project.get("notes", ""):
+        project["notes"] = notes
+        changed = True
+
+    exclusions_text = "\n".join(project.get("exclusions", []))
+    new_exclusions_text = st.text_area(
+        "Scope exclusions & assumptions (one per line)",
+        value=exclusions_text,
+        key=f"exclusions_{project['id']}",
+        help="Each line becomes one bullet on the export's Exclusions page -- mirrors how Project Eagle's proposal called out scope limits.",
+        height=100,
+    )
+    new_exclusions = [line.strip() for line in new_exclusions_text.split("\n") if line.strip()]
+    if new_exclusions != project.get("exclusions", []):
+        project["exclusions"] = new_exclusions
+        changed = True
+
+    if changed:
+        ps.save_project(project)
 
 
 def _section_roles(project: dict):
@@ -204,7 +248,9 @@ def _section_roles(project: dict):
 def _section_phases(project: dict):
     st.markdown("#### Phases")
     if st.button("+ Add phase", key=f"add_phase_{project['id']}"):
-        project["phases"].append({"id": ps._new_id(), "name": f"Phase {len(project['phases']) + 1}", "enabled": True, "subtasks": []})
+        project["phases"].append(
+            {"id": ps._new_id(), "name": f"Phase {len(project['phases']) + 1}", "enabled": True, "note": "", "subtasks": []}
+        )
         ps.save_project(project)
         st.rerun()
 
@@ -241,6 +287,17 @@ def _section_phases(project: dict):
                     project["phases"].pop(i)
                     ps.save_project(project)
                     st.rerun()
+
+            note = st.text_input(
+                "Timing / notes (optional)",
+                value=phase.get("note", ""),
+                key=f"phase_note_{phase['id']}",
+                placeholder="e.g. Months 0-3",
+                help="Shown alongside the phase name in both exports, the way Western U's budget noted phase timing.",
+            )
+            if note != phase.get("note", ""):
+                phase["note"] = note
+                changed = True
 
             if not phase["subtasks"]:
                 st.caption("No line items in this phase.")
@@ -362,39 +419,30 @@ def _section_totals(project: dict):
         else:
             st.caption("No phases yet.")
 
-    st.download_button(
-        "⬇ Export summary (.xlsx)",
-        data=_export_summary(project, comp),
-        file_name=f"{project['project_name'].strip() or 'project'}_pricing_summary.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    st.markdown("##### Client-ready exports")
+    st.caption(
+        "A Somos-branded proposal built from the current state above -- cover page, rates, "
+        "the phase/line-item budget grid, budget summary, and scope exclusions. Excluded "
+        "items are shown struck through with their would-be cost, not hidden."
     )
-
-
-def _export_summary(project: dict, comp: dict) -> bytes:
-    """Builds a Budget-Summary-style workbook (per-firm labor/expenses/
-    total, phase breakdown, grand total) -- a generated OUTPUT in the
-    spirit of a proposal's own summary tab, not a parse of one."""
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        firms = sorted(comp["firm_total"].keys())
-        summary_rows = []
-        for firm in firms:
-            summary_rows.append({"Firm": firm, "Labor": comp["firm_labor"].get(firm, 0), "Expenses": comp["firm_expenses"].get(firm, 0), "Total": comp["firm_total"].get(firm, 0)})
-        summary_rows.append({"Firm": "PROPOSAL TOTAL", "Labor": comp["labor_total"], "Expenses": comp["expense_total"], "Total": comp["grand_total"]})
-        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Budget Summary", index=False)
-
-        phase_rows = [
-            {"Phase": p["name"], "Enabled": p["enabled"], "Hours": p["hours"], "Cost": p["cost"]}
-            for p in comp["phases"]
-        ]
-        pd.DataFrame(phase_rows).to_excel(writer, sheet_name="Phases", index=False)
-
-        role_rows = [
-            {"Firm": r["firm"], "Role": r["title"], "Rate": r["rate"], "Enabled": r["enabled"], "Cost": comp["role_cost"].get(r["id"], 0)}
-            for r in project["roles"]
-        ]
-        pd.DataFrame(role_rows).to_excel(writer, sheet_name="Roles", index=False)
-    return buf.getvalue()
+    file_stub = project["project_name"].strip() or "project"
+    dl_cols = st.columns(2)
+    with dl_cols[0]:
+        st.download_button(
+            "⬇ Export Excel workbook (.xlsx)",
+            data=pricing_export.build_workbook(project, comp),
+            file_name=f"{file_stub}_proposal.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    with dl_cols[1]:
+        st.download_button(
+            "⬇ Export PDF proposal (.pdf)",
+            data=pricing_export.build_pdf(project, comp),
+            file_name=f"{file_stub}_proposal.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
 
 
 def _section_combined_summary(active_projects: list[dict]):

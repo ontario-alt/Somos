@@ -82,12 +82,31 @@ From there:
 - Edit rates, hours, or add a brand-new subcontracted firm's roles
   directly in the tables (add a row with a different `Firm`).
 - Add flat direct expenses (materials, travel, markup) per firm.
+- Fill in client name, a cover-page summary, phase timing notes, and
+  scope exclusions/assumptions under "Proposal details" -- these feed
+  the client-facing exports below, the way Western U's budget carried a
+  timing note per phase and Project Eagle carried its own Exclusions tab.
 - Multiple projects can be uploaded and marked "active" at once for a
   combined total (e.g. a pipeline view or comparing scenarios).
-- "Export summary" downloads a generated Budget Summary workbook (firm
-  labor/expenses/totals, phase breakdown, proposal total) -- a clean
-  output in the same spirit as a hand-built proposal summary tab, not a
-  copy of whatever the source sheet looked like.
+
+### Client-ready exports
+
+The tool's actual deliverable isn't the on-screen total -- it's the
+Somos-branded proposal you hand to a client. "Export Excel workbook"
+and "Export PDF proposal" (`dashboard/pricing_export.py`) both build the
+same document: a cover page, a Team & Rates table, a phase-by-phase
+budget grid, a Budget Summary rollup, and a Scope Exclusions page,
+carrying the accent-color letterhead banner on every sheet/page. This
+mirrors the structure of the real Western U and Project Eagle budgets
+this tool was built against, not a bare data dump.
+
+A role, phase, or line item toggled off in the tool is exported struck
+through with its would-be cost rather than deleted -- the export
+documents the choices made, not just the bottom line. The Excel
+workbook's phase/line-item grid uses live formulas (`SUMPRODUCT` for
+each line's cost against the rate row, `SUMIF` for each phase's rollup
+gated on an Included/Excluded status column), so a reviewer can audit
+the math in Excel itself, not just trust a static number.
 
 The uploaded sheet is only a starting point -- costs are always computed
 live from this tool's own rates/hours/toggles (`dashboard/pricing_store.py`),

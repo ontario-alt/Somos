@@ -61,17 +61,37 @@ def list_projects() -> list[dict]:
     projects = []
     for f in sorted(config.PRICING_DATA_DIR.glob("*.json")):
         try:
-            projects.append(json.loads(f.read_text()))
+            projects.append(_ensure_defaults(json.loads(f.read_text())))
         except (json.JSONDecodeError, OSError):
             continue
     return sorted(projects, key=lambda p: p.get("project_name", ""))
+
+
+_PROJECT_DEFAULTS = {
+    "client_name": "",
+    "notes": "",
+    "exclusions": [],
+}
+_PHASE_DEFAULTS = {"note": ""}
+
+
+def _ensure_defaults(project: dict) -> dict:
+    """Backfills fields added after a project was first saved, so an older
+    saved project (or one built by project_from_upload before these
+    existed) still opens and exports cleanly."""
+    for key, default in _PROJECT_DEFAULTS.items():
+        project.setdefault(key, default)
+    for phase in project.get("phases", []):
+        for key, default in _PHASE_DEFAULTS.items():
+            phase.setdefault(key, default)
+    return project
 
 
 def load_project(project_id: str) -> dict | None:
     path = _path_for(project_id)
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    return _ensure_defaults(json.loads(path.read_text()))
 
 
 def save_project(project: dict) -> None:
@@ -91,6 +111,9 @@ def new_blank_project(project_name: str = "New Project") -> dict:
         "project_name": project_name,
         "active": True,
         "source_files": [],
+        "client_name": "",
+        "notes": "",
+        "exclusions": [],
         "roles": [
             {"id": _new_id(), "firm": config.HOME_FIRM_NAME, "title": "Principal", "rate": 300.0, "enabled": True},
         ],
@@ -124,13 +147,16 @@ def project_from_upload(path: str | Path) -> dict:
             subtasks.append(
                 {"id": _new_id(), "name": f"{sub['id']} {sub['name']}".strip(), "enabled": True, "hours": hours_by_role_id}
             )
-        phases.append({"id": _new_id(), "name": f"{task['id']}: {task['name']}".strip(": "), "enabled": True, "subtasks": subtasks})
+        phases.append({"id": _new_id(), "name": f"{task['id']}: {task['name']}".strip(": "), "enabled": True, "note": "", "subtasks": subtasks})
 
     return {
         "id": _new_id(),
         "project_name": parsed["project_name"],
         "active": True,
         "source_files": [parsed["source_file"]],
+        "client_name": "",
+        "notes": "",
+        "exclusions": [],
         "roles": roles,
         "phases": phases,
         "expenses": [],
