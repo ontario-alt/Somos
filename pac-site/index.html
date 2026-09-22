@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Somos Group PAC</title>
+<meta name="description" content="SOMOS Group PAC supports California state and local candidates and ballot measures through contributions to aligned political action committees.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600&family=Mulish:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --orange: #ec6a2c;
+  --orange-deep: #c9531a;
+  --ink: #26221f;
+  --ink-soft: #57504a;
+  --ground: #ffffff;
+  --band: #f2eeeb;
+  --line: #e4ddd7;
+  --panel: #2c2622;
+  --panel-ink: #f7f1ec;
+  --paper: #fffdfb;
+  --focus: #1f6fd1;
+
+  --display: "Montserrat", "Helvetica Neue", Arial, sans-serif;
+  --body: "Mulish", "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --gutter: clamp(16px, 5vw, 64px);
+  --max: 1120px;
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --orange: #f58549;
+    --orange-deep: #f79a66;
+    --ink: #f1ebe6;
+    --ink-soft: #bdb3aa;
+    --ground: #1a1715;
+    --band: #24201d;
+    --line: #3a332e;
+    --panel: #0f0d0c;
+    --panel-ink: #f7f1ec;
+    --paper: #221e1b;
+    --focus: #7fb2ff;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --orange: #f58549;
+  --orange-deep: #f79a66;
+  --ink: #f1ebe6;
+  --ink-soft: #bdb3aa;
+  --ground: #1a1715;
+  --band: #24201d;
+  --line: #3a332e;
+  --panel: #0f0d0c;
+  --panel-ink: #f7f1ec;
+  --paper: #221e1b;
+  --focus: #7fb2ff;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 88px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 16px/1.75 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+img { max-width: 100%; }
+a { color: var(--orange-deep); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 4px; }
+
+.wrap { max-width: var(--max); margin: 0 auto; padding-inline: var(--gutter); }
+
+h1, h2, h3 {
+  font-family: var(--display);
+  font-weight: 400;
+  color: var(--orange);
+  text-transform: uppercase;
+  text-wrap: balance;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+h2 { font-size: clamp(1.9rem, 1.3rem + 2.2vw, 2.9rem); line-height: 1.15; }
+h3 { font-size: clamp(1.35rem, 1.1rem + 0.9vw, 1.8rem); line-height: 1.2; }
+p { margin: 0; }
+.eyebrow {
+  font: 600 0.75rem/1 var(--display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.rule { width: 48px; height: 2px; background: var(--orange); border: 0; margin: 0; }
+
+/* ---------- Nav ---------- */
+.nav {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 10;
+  background: var(--band);
+  border-bottom: 1px solid var(--line);
+}
+.nav .wrap {
+  display: flex; align-items: center; gap: 24px;
+  min-height: 72px; flex-wrap: wrap; padding-block: 10px;
+}
+.logo {
+  font: 300 1.9rem/1 var(--display);
+  color: var(--orange);
+  text-decoration: none;
+  letter-spacing: 0.04em;
+  padding-bottom: 5px;
+  border-bottom: 2px solid var(--orange);
+  display: inline-flex; align-items: baseline; gap: 8px;
+}
+.logo small { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.18em; }
+.nav ul {
+  list-style: none; margin: 0 0 0 auto; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 6px 26px;
+}
+.nav ul a {
+  font: 600 0.78rem/1 var(--display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--orange);
+  text-decoration: none;
+  padding-block: 6px;
+  border-bottom: 2px solid transparent;
+}
+.nav ul a:hover { border-bottom-color: currentColor; }
+@media (max-width: 760px) {
+  .nav ul { margin-left: 0; width: 100%; gap: 6px 18px; }
+}
+
+/* ---------- Hero ---------- */
+.hero {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(20,14,10,.15), rgba(20,14,10,.55)),
+    radial-gradient(120% 90% at 85% 10%, #f1a36d 0%, transparent 55%),
+    radial-gradient(90% 80% at 10% 100%, #7a3b1c 0%, transparent 60%),
+    linear-gradient(135deg, #b8521f 0%, #8a3d1a 45%, #3b231a 100%);
+  overflow: hidden;
+  padding-block: clamp(72px, 12vw, 140px) clamp(56px, 8vw, 96px);
+}
+.hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55; }
+.hero .wrap { position: relative; display: grid; justify-items: center; }
+.hero-box {
+  background: rgba(255,255,255,.72);
+  backdrop-filter: blur(3px);
+  padding: clamp(18px, 3vw, 28px) clamp(20px, 5vw, 64px);
+  text-align: center;
+  max-width: 100%;
+}
+.hero h1 {
+  font-weight: 500;
+  font-size: clamp(2.1rem, 1rem + 5vw, 4.4rem);
+  line-height: 1.02;
+  color: #e3601f;
+}
+.hero-box p {
+  margin-top: 10px;
+  font: 600 0.8rem/1.4 var(--display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #3b2a20;
+}
+.hero-tag {
+  margin-top: 28px;
+  color: #fff4ec;
+  max-width: 44ch;
+  text-align: center;
+  font-size: 1.05rem;
+}
+
+/* ---------- Sections ---------- */
+section { padding-block: clamp(64px, 9vw, 112px); }
+.offset {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.6fr);
+  gap: 40px;
+}
+.offset .side { padding-top: 10px; }
+.offset .main { display: grid; gap: 18px; max-width: 70ch; }
+.offset .main p { color: var(--ink-soft); }
+@media (max-width: 820px) { .offset { grid-template-columns: 1fr; gap: 14px; } }
+
+.band { background: var(--band); }
+
+.center-head { display: grid; justify-items: center; gap: 22px; text-align: center; margin-bottom: clamp(40px, 6vw, 72px); }
+.center-head p { color: var(--ink-soft); max-width: 60ch; }
+
+/* ---------- Alternating rows ---------- */
+.rows { display: grid; gap: clamp(48px, 7vw, 88px); }
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(28px, 5vw, 64px);
+  align-items: center;
+}
+.row:nth-child(even) .figure { order: 2; }
+.row .copy { display: grid; gap: 18px; max-width: 46ch; }
+.row .copy p { color: var(--ink-soft); font-size: 0.97rem; }
+@media (max-width: 820px) {
+  .row { grid-template-columns: 1fr; }
+  .row:nth-child(even) .figure { order: 0; }
+}
+.figure {
+  border-radius: var(--radius);
+  aspect-ratio: 3 / 2;
+  max-width: 100%;
+  position: relative;
+  overflow: hidden;
+  color: #fff;
+  display: grid;
+  align-content: end;
+  padding: clamp(20px, 3vw, 32px);
+}
+.figure .big { font: 300 clamp(3rem, 2rem + 4vw, 5.2rem)/1 var(--display); letter-spacing: -0.01em; }
+.figure .cite { font: 500 0.78rem/1.4 var(--mono); opacity: .9; margin-top: 10px; }
+.fig-a { background: linear-gradient(150deg, #e9773a, #a8441a 70%, #5b2812); }
+.fig-b { background: linear-gradient(150deg, #3d4b43, #26302b 60%, #171c19); }
+.fig-c { background: linear-gradient(150deg, #d9a15e, #9c5b27 65%, #4a2a14); }
+.figure::before {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(115deg, rgba(255,255,255,.06) 0 1px, transparent 1px 18px);
+}
+.figure > * { position: relative; }
+
+/* ---------- Briefings ---------- */
+.brief {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: clamp(32px, 5vw, 72px);
+  align-items: start;
+}
+@media (max-width: 900px) { .brief { grid-template-columns: 1fr; } }
+.brief-copy { display: grid; gap: 20px; }
+.brief-copy > p { color: var(--ink-soft); }
+.includes { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 0; border-top: 1px solid var(--line); }
+.includes li { display: grid; grid-template-columns: 11rem 1fr; gap: 16px; padding-block: 14px; border-bottom: 1px solid var(--line); }
+.includes b { font: 600 0.8rem/1.5 var(--display); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink); }
+.includes span { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.6; }
+@media (max-width: 520px) { .includes li { grid-template-columns: 1fr; gap: 4px; } }
+
+.memo {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 1px 0 var(--line), 0 24px 48px -28px rgba(60,30,10,.35);
+  padding: clamp(22px, 4vw, 40px);
+  transform: rotate(0.6deg);
+  font-size: 0.9rem;
+}
+.memo-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; border-bottom: 2px solid var(--orange); padding-bottom: 12px; }
+.memo-top strong { font: 500 1rem/1.2 var(--display); text-transform: uppercase; letter-spacing: 0.06em; color: var(--orange); }
+.memo-top em { font: 500 0.7rem/1 var(--mono); font-style: normal; color: var(--ink-soft); letter-spacing: 0.08em; text-transform: uppercase; }
+.memo dl { display: grid; grid-template-columns: 4.5rem 1fr; gap: 6px 12px; margin: 16px 0 18px; font-family: var(--mono); font-size: 0.78rem; }
+.memo dt { color: var(--ink-soft); }
+.memo dd { margin: 0; color: var(--ink); }
+.memo h4 { font: 600 0.78rem/1.3 var(--display); letter-spacing: 0.08em; text-transform: uppercase; margin: 18px 0 8px; color: var(--ink); }
+.bar { height: 7px; border-radius: 4px; background: var(--line); margin-bottom: 7px; }
+.memo-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+.memo-table th { text-align: left; font-weight: 500; color: var(--ink-soft); border-bottom: 1px solid var(--line); padding: 5px 6px 5px 0; }
+.memo-table td { border-bottom: 1px solid var(--line); padding: 7px 6px 7px 0; }
+.memo-table td .bar { margin: 0; }
+.split { display: flex; height: 7px; border-radius: 4px; overflow: hidden; min-width: 90px; }
+.split i { display: block; height: 100%; }
+.memo-note { margin-top: 16px; font: 400 0.72rem/1.5 var(--mono); color: var(--ink-soft); }
+
+/* ---------- FAQ ---------- */
+.faq { display: grid; border-top: 1px solid var(--line); }
+.faq details { border-bottom: 1px solid var(--line); }
+.faq summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex; justify-content: space-between; align-items: center; gap: 20px;
+  padding-block: 22px;
+  font: 400 clamp(1.05rem, 0.95rem + 0.4vw, 1.25rem)/1.35 var(--display);
+  color: var(--ink);
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after {
+  content: "+"; flex: none;
+  font: 300 1.8rem/1 var(--display); color: var(--orange);
+  transition: transform .2s ease;
+}
+.faq details[open] summary::after { transform: rotate(45deg); }
+.faq summary:hover { color: var(--orange-deep); }
+.faq .answer { display: grid; gap: 14px; padding-bottom: 26px; max-width: 68ch; color: var(--ink-soft); }
+.faq .answer .short { font-weight: 700; color: var(--ink); }
+.cite-inline { font: 400 0.8rem/1.5 var(--mono); color: var(--ink-soft); }
+@media (prefers-reduced-motion: reduce) { .faq summary::after { transition: none; } }
+
+/* ---------- Contribute ---------- */
+.ways { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 20px; }
+.way {
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: clamp(22px, 3vw, 32px);
+  display: grid; gap: 14px; align-content: start;
+}
+.way h3 { font-size: 1.3rem; }
+.way p { color: var(--ink-soft); font-size: 0.95rem; }
+.address { font: 400 0.9rem/1.7 var(--mono); color: var(--ink); font-style: normal; background: var(--band); border-radius: 8px; padding: 14px 16px; }
+.contact { display: grid; gap: 2px; font-size: 0.95rem; }
+.contact b { font-family: var(--display); font-weight: 600; font-size: 0.85rem; letter-spacing: 0.03em; }
+.contact span { font-family: var(--mono); font-size: 0.85rem; color: var(--ink); overflow-wrap: anywhere; }
+
+.facts {
+  margin-top: 40px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 0; border-top: 1px solid var(--line);
+}
+.facts div { padding: 18px 20px 18px 0; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
+.facts dt { font: 600 0.7rem/1.3 var(--display); text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-soft); }
+.facts dd { margin: 0; font: 500 1rem/1.4 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+
+.btn {
+  display: inline-block;
+  background: var(--orange);
+  color: #fff;
+  text-decoration: none;
+  font: 600 0.8rem/1 var(--display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 16px 24px;
+  border-radius: 999px;
+  justify-self: start;
+}
+.btn:hover { background: var(--orange-deep); }
+
+/* ---------- Footer ---------- */
+footer { background: var(--panel); color: var(--panel-ink); padding-block: 48px calc(40px + env(safe-area-inset-bottom, 0px)); }
+footer .wrap { display: grid; gap: 22px; }
+footer .logo { color: #f58549; border-color: #f58549; justify-self: start; }
+.paid { border: 1px solid rgba(247,241,236,.4); padding: 10px 14px; justify-self: start; font: 600 0.85rem/1.4 var(--display); letter-spacing: 0.04em; }
+footer p { font-size: 0.85rem; color: rgba(247,241,236,.72); max-width: 80ch; }
+</style>
+</head>
+<body>
+
+<nav class="nav" aria-label="Primary">
+  <div class="wrap">
+    <a class="logo" href="#top">SOMOS <small>GROUP PAC</small></a>
+    <ul>
+      <li><a href="#about">About</a></li>
+      <li><a href="#approach">Our Approach</a></li>
+      <li><a href="#briefings">Member Briefings</a></li>
+      <li><a href="#faq">FAQ</a></li>
+      <li><a href="#contribute">Contribute</a></li>
+    </ul>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <canvas id="contours" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="hero-box">
+      <h1>Somos Group PAC</h1>
+      <p>California State &amp; Local Political Committee</p>
+    </div>
+    <p class="hero-tag">Supporting the candidates and ballot measures that shape how California builds, grows, and invests in its communities.</p>
+  </div>
+</header>
+
+<main>
+  <section id="about">
+    <div class="wrap offset">
+      <div class="side"><span class="eyebrow">About the Committee</span></div>
+      <div class="main">
+        <h2>What is the Somos Group PAC?</h2>
+        <p>The SOMOS Group PAC (“the Committee”) is a political committee organized under Internal Revenue Code section 527 and California Government Code section 82013(a) to support California state and local candidates and ballot measures.</p>
+        <p>The Committee does <strong>not</strong> make direct contributions to candidates. Instead, it contributes to other political action committees that support the candidates and issues the Committee supports — and makes certain that all of its activities supporting candidates and ballot measures comply with every legal requirement.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="approach" class="band">
+    <div class="wrap">
+      <div class="center-head">
+        <h2>How the PAC Works</h2>
+        <hr class="rule">
+      </div>
+
+      <div class="rows">
+        <article class="row">
+          <div class="figure fig-a" aria-hidden="true">
+            <div class="big">527</div>
+            <div class="cite">IRC § 527 · Cal. Gov. Code § 82013(a)</div>
+          </div>
+          <div class="copy">
+            <h3>Invest Through Aligned Committees</h3>
+            <p>Rather than giving to candidates directly, the Committee pools member support and directs it to political action committees working on behalf of the candidates and issues we share — across state legislative, local, and ballot measure races.</p>
+          </div>
+        </article>
+
+        <article class="row">
+          <div class="figure fig-b" aria-hidden="true">
+            <div class="big">No&nbsp;limit</div>
+            <div class="cite">Individuals · Businesses · PACs · Contractors</div>
+          </div>
+          <div class="copy">
+            <h3>Open to Our Whole Network</h3>
+            <p>Because the Committee does not contribute to or coordinate with candidates, it may accept contributions in any amount from individuals, corporations, other business entities, PACs, government contractors, and lobbyists — including those with pending real estate development projects anywhere in California.</p>
+          </div>
+        </article>
+
+        <article class="row">
+          <div class="figure fig-c" aria-hidden="true">
+            <div class="big">Form&nbsp;460</div>
+            <div class="cite">Filed with the California Secretary of State</div>
+          </div>
+          <div class="copy">
+            <h3>Compliance First</h3>
+            <p>Every contribution of $100 or more is publicly disclosed on reports filed with the Secretary of State. The Committee's legal counsel and treasurer, The Sutton Law Firm, oversees filings and is available to help members understand any reporting obligations of their own.</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="briefings">
+    <div class="wrap brief">
+      <div class="brief-copy">
+        <span class="eyebrow">For PAC Members</span>
+        <h2>Legislative Races Updates</h2>
+        <hr class="rule">
+        <p>Members receive periodic strategy memos on the California political landscape — prepared for SOMOS leadership and shared with contributors — so you can see where the PAC sees opportunity and why.</p>
+        <ul class="includes">
+          <li><b>Landscape overview</b><span>How the current cycle is shaping up, and where SOMOS and its PAC can engage for the greatest impact.</span></li>
+          <li><b>Statewide races</b><span>Top-of-ticket contests to watch and their likely effect on turnout and down-ballot races.</span></li>
+          <li><b>Ballot initiatives</b><span>Measures likely to mobilize voters, including housing, land use, and climate-related bonds.</span></li>
+          <li><b>District-by-district</b><span>Open Assembly and Senate seats, special elections, and competitive districts — with the major city, voter registration breakdown, and declared candidate field for each.</span></li>
+          <li><b>Updates as fields form</b><span>Revised analysis as candidates file and SOMOS's legislative priorities take shape.</span></li>
+        </ul>
+      </div>
+
+      <figure class="memo" aria-label="Illustration of a Legislative Races Update memo layout">
+        <div class="memo-top">
+          <strong>Legislative Races Update</strong>
+          <em>Members only</em>
+        </div>
+        <dl>
+          <dt>TO</dt><dd>SOMOS Group PAC Members</dd>
+          <dt>RE</dt><dd>Political Opportunities in the Cycle</dd>
+        </dl>
+        <h4>Overview of the Political Landscape</h4>
+        <div class="bar" style="width:100%"></div>
+        <div class="bar" style="width:94%"></div>
+        <div class="bar" style="width:62%"></div>
+        <h4>Open Seats</h4>
+        <div style="overflow-x:auto">
+          <table class="memo-table">
+            <thead><tr><th>District</th><th>Major city</th><th>Registration</th></tr></thead>
+            <tbody>
+              <tr><td>AD —</td><td><div class="bar" style="width:70%"></div></td><td><div class="split"><i style="width:44%;background:#3a6ea5"></i><i style="width:26%;background:#c0463a"></i><i style="width:30%;background:#b9ada3"></i></div></td></tr>
+              <tr><td>AD —</td><td><div class="bar" style="width:55%"></div></td><td><div class="split"><i style="width:31%;background:#3a6ea5"></i><i style="width:40%;background:#c0463a"></i><i style="width:29%;background:#b9ada3"></i></div></td></tr>
+              <tr><td>SD —</td><td><div class="bar" style="width:80%"></div></td><td><div class="split"><i style="width:52%;background:#3a6ea5"></i><i style="width:20%;background:#c0463a"></i><i style="width:28%;background:#b9ada3"></i></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h4>Competitive Districts</h4>
+        <div class="bar" style="width:88%"></div>
+        <div class="bar" style="width:40%"></div>
+        <p class="memo-note">Illustrative layout only. Full briefings are distributed to members.</p>
+      </figure>
+    </div>
+  </section>
+
+  <section id="faq" class="band">
+    <div class="wrap offset">
+      <div class="side"><span class="eyebrow">Contributor Fact Sheet</span></div>
+      <div class="main">
+        <h2>Frequently Asked Questions</h2>
+        <div class="faq">
+          <details open>
+            <summary>Are there limits on how much I may contribute?</summary>
+            <div class="answer">
+              <p><span class="short">No.</span> The Committee may accept contributions from individuals, corporations, other types of business entities, PACs, government contractors, lobbyists, and others, in any amount. It may not accept contributions from foreign nationals unless the individual is a permanent resident (green card holder). <span class="cite-inline">52 U.S.C. § 30121</span></p>
+              <p>Because the Committee does not contribute directly to candidates, it may accept contributions in any amount from individuals and entities with pending real estate development projects anywhere in California.</p>
+            </div>
+          </details>
+          <details>
+            <summary>Does contributing trigger SEC Rule 206(4)-5?</summary>
+            <div class="answer">
+              <p><span class="short">No.</span> Because the Committee does not contribute directly to candidates and does not coordinate its activities with any candidate, contributions to the Committee do not trigger SEC Rule 206(4)-5, which prohibits certain financial advisors from making political contributions.</p>
+              <p class="cite-inline">Federal Register at p. 41044, n.337 [PACs and political parties]; Federal Register at p. 41024 [independent expenditures]; see also Citizens United v. Fed. Election Comm’n (2010) 130 S. Ct. 876.</p>
+            </div>
+          </details>
+          <details>
+            <summary>Are contributions tax deductible?</summary>
+            <div class="answer">
+              <p><span class="short">No.</span> Contributions to the Committee are not tax deductible as charitable donations or business expenses. <span class="cite-inline">Int. Rev. Code §§ 162(e) &amp; 6113(a)</span></p>
+            </div>
+          </details>
+          <details>
+            <summary>Will my contribution be publicly disclosed?</summary>
+            <div class="answer">
+              <p><span class="short">Yes.</span> The Committee is legally required to publicly disclose all contributions of $100 or more on reports (FPPC Form 460) filed with the Secretary of State, where the public can view them online. <span class="cite-inline">Cal. Gov. Code § 84211</span></p>
+            </div>
+          </details>
+          <details>
+            <summary>Will I have to file my own campaign report?</summary>
+            <div class="answer">
+              <p><span class="short">Possibly.</span> Individuals and entities that contribute $10,000 or more in a calendar year to all California state and local ballot measures, candidates, PACs, and political parties <em>combined</em> — including their contribution to the Committee — must file their own campaign reports (FPPC Form 461).</p>
+              <p>They must also file FPPC Form 497 within 24 hours of making a contribution of $1,000 or more to the Committee. <span class="cite-inline">Cal. Gov. Code §§ 82013(c), 84203 &amp; 84211</span></p>
+              <p>For questions about these requirements, contact the Committee’s legal counsel and treasurer, Matthew Alvarez, at 415-732-4502 or malvarez@campaignlawyers.com, or the California Fair Political Practices Commission at 916-322-5660.</p>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="contribute">
+    <div class="wrap">
+      <div class="center-head">
+        <h2>Make a Contribution</h2>
+        <hr class="rule">
+        <p>Individual contributors: please include your occupation and employer. If not currently employed, write “none”; if retired, “retired”; if self-employed, the name of the business; if a consultant, the type of consulting business.</p>
+      </div>
+
+      <div class="ways">
+        <div class="way">
+          <span class="eyebrow">By check</span>
+          <h3>Mail a Check</h3>
+          <p>Make checks payable to <strong>“SOMOS Group PAC”</strong> and send to:</p>
+          <address class="address">The Sutton Law Firm<br>150 Post St., Ste. 405<br>San Francisco, CA 94108<br>Attn: Chris Gembinski</address>
+        </div>
+        <div class="way">
+          <span class="eyebrow">By wire or credit card</span>
+          <h3>Contact Compliance</h3>
+          <p>To contribute by wire transfer or credit card, contact the Committee’s Political Compliance Specialist.</p>
+          <div class="contact">
+            <b>Chris Gembinski</b>
+            <span>415-732-7700</span>
+            <span>cgembinski@campaignlawyers.com</span>
+          </div>
+        </div>
+        <div class="way">
+          <span class="eyebrow">Filing questions</span>
+          <h3>Legal Counsel</h3>
+          <p>Questions about your own reporting obligations as a contributor.</p>
+          <div class="contact">
+            <b>Matthew Alvarez, Legal Counsel &amp; Treasurer</b>
+            <span>415-732-4502</span>
+            <span>malvarez@campaignlawyers.com</span>
+          </div>
+        </div>
+      </div>
+
+      <dl class="facts">
+        <div><dt>Committee FEIN</dt><dd>93-4475131</dd></div>
+        <div><dt>FPPC ID</dt><dd>Pending — available on request</dd></div>
+        <div><dt>Disclosure threshold</dt><dd>$100+ (Form 460)</dd></div>
+        <div><dt>Tax deductible</dt><dd>No</dd></div>
+      </dl>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a class="logo" href="#top">SOMOS <small>GROUP PAC</small></a>
+    <div class="paid">Paid for by SOMOS Group PAC</div>
+    <p>Contributions to SOMOS Group PAC are not tax deductible as charitable contributions or business expenses. The Committee does not accept contributions from foreign nationals other than lawful permanent residents. Legal counsel and treasurer: The Sutton Law Firm, 150 Post Street, Suite 405, San Francisco, CA 94108.</p>
+  </div>
+</footer>
+
+<script>
+// Ambient topographic contour lines behind the hero title.
+(function () {
+  var c = document.getElementById("contours");
+  if (!c || !c.getContext) return;
+  var ctx = c.getContext("2d");
+  function draw() {
+    var r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    c.width = r.width * dpr; c.height = r.height * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, r.width, r.height);
+    ctx.strokeStyle = "rgba(255,236,220,0.35)";
+    ctx.lineWidth = 1;
+    var cx = r.width * 0.78, cy = r.height * 0.2;
+    for (var k = 1; k < 28; k++) {
+      ctx.beginPath();
+      for (var a = 0; a <= Math.PI * 2 + 0.01; a += 0.05) {
+        var wob = 1 + 0.14 * Math.sin(3 * a + k * 0.35) + 0.07 * Math.cos(5 * a - k * 0.2);
+        var rad = k * 26 * wob;
+        var x = cx + Math.cos(a) * rad * 1.35, y = cy + Math.sin(a) * rad;
+        a === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+  draw();
+  var t;
+  window.addEventListener("resize", function () { clearTimeout(t); t = setTimeout(draw, 150); });
+})();
+</script>
+</body>
+</html>
