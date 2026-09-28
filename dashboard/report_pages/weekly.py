@@ -53,13 +53,27 @@ def _section_cash_position():
         return
     week_start = datetime.date.today() - datetime.timedelta(days=7)
 
+    # cash_receipts/cash_disbursements have no genuine per-row snapshot of
+    # their own (see build_warehouse.py) -- every rebuild stamps whatever
+    # rows it finds with that run's date. Filtering to the latest
+    # snapshot_date avoids double-counting if the same source file is
+    # ever reloaded on a later calendar day and leaves two snapshots of
+    # identical receipt/check rows behind.
     collected = (
-        query("SELECT COALESCE(SUM(-amount), 0) AS v FROM cash_receipts WHERE receipt_date >= ?", [week_start]).iloc[0]["v"]
+        query(
+            "SELECT COALESCE(SUM(-amount), 0) AS v FROM cash_receipts "
+            "WHERE receipt_date >= ? AND snapshot_date = (SELECT MAX(snapshot_date) FROM cash_receipts)",
+            [week_start],
+        ).iloc[0]["v"]
         if table_exists("cash_receipts")
         else None
     )
     disbursed = (
-        query("SELECT COALESCE(SUM(amount), 0) AS v FROM cash_disbursements WHERE check_date >= ?", [week_start]).iloc[0]["v"]
+        query(
+            "SELECT COALESCE(SUM(amount), 0) AS v FROM cash_disbursements "
+            "WHERE check_date >= ? AND snapshot_date = (SELECT MAX(snapshot_date) FROM cash_disbursements)",
+            [week_start],
+        ).iloc[0]["v"]
         if table_exists("cash_disbursements")
         else None
     )
@@ -82,7 +96,7 @@ def _section_cash_position():
             FROM cash_receipts r
             LEFT JOIN (SELECT DISTINCT client_name, entity FROM matter_list) m
                 ON lower(trim(r.client_name)) = lower(trim(m.client_name))
-            WHERE r.receipt_date >= ?
+            WHERE r.receipt_date >= ? AND r.snapshot_date = (SELECT MAX(snapshot_date) FROM cash_receipts)
             GROUP BY 1
             """,
             [week_start],
@@ -93,7 +107,7 @@ def _section_cash_position():
                 """
                 SELECT COALESCE(entity, 'Unmapped') AS entity, COALESCE(SUM(amount), 0) AS disbursed
                 FROM cash_disbursements
-                WHERE check_date >= ?
+                WHERE check_date >= ? AND snapshot_date = (SELECT MAX(snapshot_date) FROM cash_disbursements)
                 GROUP BY 1
                 """,
                 [week_start],
@@ -498,10 +512,14 @@ def _section_ap_aging():
     if not table_exists("ap_aging"):
         missing_source("the AP export")
         return
+    # ap_aging has no genuine per-row snapshot of its own -- filtered to
+    # the latest snapshot_date so a reload on a later day doesn't leave a
+    # duplicate snapshot behind and double every figure below.
     df = query(
         f"""
         SELECT 'Total' AS grp, {', '.join(f'SUM({b}) AS {b}' for b in config.AGING_BUCKETS)}
         FROM ap_aging
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM ap_aging)
         """
     )
     fig = aging_stacked_bar(df, group_col="grp")
@@ -511,6 +529,7 @@ def _section_ap_aging():
         """
         SELECT vendor_name, invoice_number, invoice_date, entity, balance
         FROM ap_aging
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM ap_aging)
         ORDER BY balance DESC
         """
     )
@@ -537,6 +556,7 @@ def _section_exceptions():
         SELECT matter_name, invoice_number, invoice_date, line_amount, ar_comment
         FROM ar_aging
         WHERE ar_comment IS NOT NULL AND ar_comment != ''
+              AND snapshot_date = (SELECT MAX(snapshot_date) FROM ar_aging)
         ORDER BY invoice_date DESC
         """
     )

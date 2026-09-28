@@ -68,12 +68,17 @@ def _section_timekeeper_hours(fy_start: datetime.date, fy_end: datetime.date):
         )
         return
 
+    # employee_targets has no genuine per-row snapshot -- joined against
+    # only its latest snapshot_date so a reload on a later day (leaving a
+    # duplicate snapshot behind) can't fan out this join and double a
+    # timekeeper's hours.
     df = query(
         """
         SELECT h.entity, h.employee_name, t.target_type,
                h.billable_hours, h.credited_hours, h.total_hours, h.period_end
         FROM timekeeper_hours h
         JOIN employee_targets t ON h.employee_name = t.full_name
+            AND t.snapshot_date = (SELECT MAX(snapshot_date) FROM employee_targets)
         WHERE t.target_type IS NOT NULL
         ORDER BY h.entity, h.employee_name
         """
@@ -227,6 +232,7 @@ def _section_originations():
         """
         SELECT attorney, SUM(credit_fraction) AS matter_credits
         FROM originations
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM originations)
         GROUP BY attorney
         ORDER BY matter_credits DESC
         """
@@ -251,7 +257,15 @@ def _section_originations():
             "Matter-credits shown instead."
         )
 
-    flagged = query("SELECT status, COUNT(*) AS matters FROM originations_flagged GROUP BY status ORDER BY matters DESC") if table_exists("originations_flagged") else pd.DataFrame()
+    flagged = (
+        query(
+            "SELECT status, COUNT(*) AS matters FROM originations_flagged "
+            "WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM originations_flagged) "
+            "GROUP BY status ORDER BY matters DESC"
+        )
+        if table_exists("originations_flagged")
+        else pd.DataFrame()
+    )
     if not flagged.empty:
         st.markdown("**Matters needing attention**")
         st.dataframe(flagged, use_container_width=True, hide_index=True)
@@ -262,6 +276,10 @@ def _section_practice_group_profitability():
     if not (table_exists("matter_earnings") and table_exists("matter_list")):
         missing_source("the NTE Tracking Report + matter list export (for the practice-group taxonomy)")
         return
+    # Neither matter_earnings nor matter_list has a genuine per-row
+    # snapshot date -- both filtered to their own latest snapshot_date so
+    # a reload on a later day (leaving a duplicate snapshot behind on
+    # either side) can't fan out the join and double revenue/profit.
     df = query(
         """
         SELECT
@@ -271,6 +289,8 @@ def _section_practice_group_profitability():
             SUM(e.jtd_profit) AS profit
         FROM matter_earnings e
         LEFT JOIN matter_list m ON e.matter_code = m.matter_code
+            AND m.snapshot_date = (SELECT MAX(snapshot_date) FROM matter_list)
+        WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM matter_earnings)
         GROUP BY practice_group
         ORDER BY profit DESC
         """
@@ -297,7 +317,10 @@ def _section_practice_group_profitability():
     match = query(
         """
         SELECT COUNT(*) AS total, COUNT(m.matter_code) AS matched
-        FROM matter_earnings e LEFT JOIN matter_list m ON e.matter_code = m.matter_code
+        FROM matter_earnings e
+        LEFT JOIN matter_list m ON e.matter_code = m.matter_code
+            AND m.snapshot_date = (SELECT MAX(snapshot_date) FROM matter_list)
+        WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM matter_earnings)
         """
     ).iloc[0]
     st.caption(

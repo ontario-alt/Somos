@@ -196,11 +196,15 @@ def _section_revenue_by_matter_type():
     if not (table_exists("ar_aging") and table_exists("matter_list")):
         missing_source("the AR aging export + the matter list export (for the practice-group taxonomy)")
         return
+    # matter_list has no genuine per-row snapshot -- pinned to its own
+    # latest snapshot_date so a reload on a later day (leaving a
+    # duplicate snapshot behind) can't fan out the join and double AR.
     df = query(
         """
         SELECT a.snapshot_date, COALESCE(m.organization_name, 'Unmapped') AS practice_group, SUM(a.line_amount) AS ar_amount
         FROM ar_aging a
         LEFT JOIN matter_list m ON a.matter_code = m.matter_code
+            AND m.snapshot_date = (SELECT MAX(snapshot_date) FROM matter_list)
         GROUP BY a.snapshot_date, practice_group
         ORDER BY a.snapshot_date, practice_group
         """
@@ -218,6 +222,7 @@ def _section_revenue_by_matter_type():
             COUNT(DISTINCT CASE WHEN m.matter_code IS NOT NULL THEN a.matter_code END) AS matched
         FROM ar_aging a
         LEFT JOIN matter_list m ON a.matter_code = m.matter_code
+            AND m.snapshot_date = (SELECT MAX(snapshot_date) FROM matter_list)
         """
     ).iloc[0]
     st.caption(

@@ -68,7 +68,21 @@ def render():
 
 
 def _section_kpis():
-    wip_total = query("SELECT COALESCE(SUM(wip_amount), 0) AS v FROM wip_by_matter").iloc[0]["v"] if table_exists("wip_by_matter") else None
+    # wip_by_matter has no genuine per-row date (see build_warehouse.py's
+    # "batch daily/weekly, one date per run" sources) -- every rebuild
+    # stamps it with that run's date, so if the same source file gets
+    # reloaded on a later calendar day, the table can hold more than one
+    # snapshot of identical data. Filter to the latest one everywhere a
+    # "current total" is shown, or a stale duplicate snapshot silently
+    # doubles the figure.
+    wip_total = (
+        query(
+            "SELECT COALESCE(SUM(wip_amount), 0) AS v FROM wip_by_matter "
+            "WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM wip_by_matter)"
+        ).iloc[0]["v"]
+        if table_exists("wip_by_matter")
+        else None
+    )
 
     # Invoiced current/prior month + a prior-month-to-date figure so
     # "current month so far" has something apples-to-apples to compare
@@ -112,7 +126,14 @@ def _section_kpis():
     )
     ar_total = latest_ar["total"] if has_ar else None
     over_90 = latest_ar["over_90"] if has_ar else None
-    matter_count = query("SELECT COUNT(*) AS v FROM wip_by_matter").iloc[0]["v"] if table_exists("wip_by_matter") else None
+    matter_count = (
+        query(
+            "SELECT COUNT(*) AS v FROM wip_by_matter "
+            "WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM wip_by_matter)"
+        ).iloc[0]["v"]
+        if table_exists("wip_by_matter")
+        else None
+    )
 
     kpi_row(
         [
@@ -268,7 +289,9 @@ def _section_top_matters():
         df = query(
             """
             SELECT company, client_name, matter_name, SUM(wip_amount) AS value
-            FROM wip_by_matter GROUP BY company, client_name, matter_name
+            FROM wip_by_matter
+            WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM wip_by_matter)
+            GROUP BY company, client_name, matter_name
             """
         )
         df["entity"] = df["company"]
@@ -279,10 +302,15 @@ def _section_top_matters():
         # Same risk here -- group by the real matter_code, not matter_name,
         # since matter_name alone collides across matter_codes (verified:
         # "General Real Estate" alone spans 11 distinct matter codes).
+        # Also filtered to the latest snapshot_date -- ar_aging has no
+        # genuine per-row date either, so a rebuild on a later day with
+        # the same source file can leave more than one snapshot behind.
         df = query(
             """
             SELECT matter_code, matter_name, entity, SUM(line_amount) AS value
-            FROM ar_aging WHERE entity IS NOT NULL GROUP BY matter_code, matter_name, entity
+            FROM ar_aging
+            WHERE entity IS NOT NULL AND snapshot_date = (SELECT MAX(snapshot_date) FROM ar_aging)
+            GROUP BY matter_code, matter_name, entity
             """
         )
         df["client_name"] = None
@@ -315,7 +343,11 @@ def _section_wip_treemap():
         missing_source("the WIP export")
         return
     df = query(
-        "SELECT company, client_name, matter_name, SUM(wip_amount) AS wip_amount FROM wip_by_matter GROUP BY company, client_name, matter_name"
+        """
+        SELECT company, client_name, matter_name, SUM(wip_amount) AS wip_amount FROM wip_by_matter
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM wip_by_matter)
+        GROUP BY company, client_name, matter_name
+        """
     )
     df = df[df["wip_amount"] > 0]
     if df.empty:
@@ -351,7 +383,8 @@ def _section_billable_hours():
         missing_source("the WIP export")
         return
     span = query(
-        "SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi FROM wip_transactions WHERE billing_status = 'B'"
+        "SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi FROM wip_transactions "
+        "WHERE billing_status = 'B' AND snapshot_date = (SELECT MAX(snapshot_date) FROM wip_transactions)"
     )
     lo, hi = span.iloc[0]["lo"], span.iloc[0]["hi"]
     if lo is None or hi is None:
@@ -363,6 +396,7 @@ def _section_billable_hours():
         SELECT employee_name, SUM(hours) AS hours
         FROM wip_transactions
         WHERE billing_status = 'B' AND employee_name IS NOT NULL
+              AND snapshot_date = (SELECT MAX(snapshot_date) FROM wip_transactions)
         GROUP BY employee_name
         """
     )
@@ -484,7 +518,17 @@ def _section_timekeeper():
     has_cost = table_exists("employee_cost_rates")
     has_targets = has_cost and table_exists("employee_targets")
 
-    cost_join = "LEFT JOIN employee_cost_rates c ON e.employee_name = c.wip_name" if has_cost else ""
+    # Neither employee_cost_rates nor employee_targets has a genuine
+    # per-row snapshot -- both joins pinned to their own latest
+    # snapshot_date so a reload on a later day (leaving a duplicate
+    # snapshot behind on either side) can't fan out the join and double
+    # an employee's cost/hours.
+    cost_join = (
+        "LEFT JOIN employee_cost_rates c ON e.employee_name = c.wip_name "
+        "AND c.snapshot_date = (SELECT MAX(snapshot_date) FROM employee_cost_rates)"
+        if has_cost
+        else ""
+    )
     cost_select = (
         """
             c.job_cost_type,
@@ -497,7 +541,12 @@ def _section_timekeeper():
         if has_cost
         else ""
     )
-    target_join = "LEFT JOIN employee_targets t ON c.employee_number = t.employee_number" if has_targets else ""
+    target_join = (
+        "LEFT JOIN employee_targets t ON c.employee_number = t.employee_number "
+        "AND t.snapshot_date = (SELECT MAX(snapshot_date) FROM employee_targets)"
+        if has_targets
+        else ""
+    )
     target_select = "t.target_type," if has_targets else ""
 
     df = query(
@@ -516,6 +565,7 @@ def _section_timekeeper():
                 SUM(CASE WHEN billing_status = 'B' THEN hours ELSE 0 END) AS billable_hours
             FROM wip_transactions
             WHERE employee_name IS NOT NULL
+                  AND snapshot_date = (SELECT MAX(snapshot_date) FROM wip_transactions)
             GROUP BY employee_name
         )
         SELECT
@@ -551,7 +601,8 @@ def _section_timekeeper():
 
     if has_targets:
         span = query(
-            "SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi FROM wip_transactions WHERE billing_status = 'B'"
+            "SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi FROM wip_transactions "
+            "WHERE billing_status = 'B' AND snapshot_date = (SELECT MAX(snapshot_date) FROM wip_transactions)"
         ).iloc[0]
         days_span = max((span["hi"] - span["lo"]).days + 1, 1) if span["lo"] is not None else 30
         credit = config.BILLABLE_HOUR_CREDIT if config.EMPLOYEE_TARGETS_CREDIT_REDUCES_TARGET else 0
@@ -639,6 +690,7 @@ def _section_exceptions():
         SELECT matter_name, invoice_number, invoice_date, line_amount, ar_comment
         FROM ar_aging
         WHERE ar_comment IS NOT NULL AND ar_comment != ''
+              AND snapshot_date = (SELECT MAX(snapshot_date) FROM ar_aging)
         ORDER BY invoice_date DESC
         """
     )

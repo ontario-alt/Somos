@@ -94,10 +94,13 @@ SOURCE_FILE_PATTERNS = {
     "nte_tracking": ["*NTE*Tracking*.xlsx"],
 }
 
-# The NTE Tracking Report only covers matters with a not-to-exceed cap
-# set (a "Records Selected" filter in Vantagepoint, confirmed: 42 of the
-# ~315 matters in the matter list) -- real revenue/profit data, but for
-# a subset of the portfolio, not the whole thing. Keep this in one place
+# The NTE Tracking Report only covers matters billed against a
+# not-to-exceed cap (a "Records Selected" filter in Vantagepoint,
+# confirmed: 42 of the ~315 matters in the matter list) -- real
+# revenue/profit data, but for a subset of the portfolio, not the whole
+# thing. Not a coverage gap to fix with more of this export: flat-fee
+# and T&E matters are never NTE-capped in the first place, so most of
+# the portfolio structurally can't appear here. Keep this in one place
 # so every page that surfaces matter_earnings can caption it consistently.
 MATTER_EARNINGS_IS_PARTIAL = True
 
