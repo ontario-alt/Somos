@@ -52,6 +52,7 @@ from etl import (
     parse_leave,
     parse_matter_earnings,
     parse_matter_list,
+    parse_monthly_hours_workbook,
     parse_originations,
     parse_receipts,
     parse_timekeeper_hours,
@@ -67,7 +68,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 _TEXT_COLUMNS = {
     "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
     "client_name_confidence", "target_type", "employee_number", "name_key", "matter_name",
-    "labor_code", "billing_status", "leave_type", "note",
+    "labor_code", "billing_status", "leave_type", "note", "sheet", "hours_category",
 }
 # Optional date columns that are often entirely blank (nobody joined or
 # left mid-period, no open-ended leave) -- an all-None column would
@@ -76,7 +77,10 @@ _DATE_COLUMNS = {"start_date", "end_date", "leave_start", "leave_end"}
 # Optional dollar columns (labor detail exports vary in which extensions
 # they carry) -- forced to float so an all-blank column doesn't land as
 # INTEGER and then reject real values on a later upsert.
-_FLOAT_COLUMNS = {"standard_value", "billed_amount", "cost_amount"}
+_FLOAT_COLUMNS = {
+    "standard_value", "billed_amount", "cost_amount", "billable_target", "credit_cap", "total_target", "bonus_threshold",
+    "billable_requirement", "total_requirement",
+}
 
 
 def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
@@ -260,6 +264,11 @@ def build(snapshot_date: date | None = None) -> Path:
     labor_rows = parse_labor_detail.parse()
     parse_labor_detail.write_processed(labor_rows)
     _create_table(con, "labor_detail", labor_rows, snapshot_date, snapshot_date_col="transaction_date")
+
+    # --- Firm's monthly hours workbook (closed measuring periods) ----------
+    monthly_hours_rows = parse_monthly_hours_workbook.parse()
+    parse_monthly_hours_workbook.write_processed(monthly_hours_rows)
+    _create_table(con, "monthly_hours", monthly_hours_rows, snapshot_date, snapshot_date_col="month")
 
     # --- Approved leave (hand-maintained, prorates hour targets) ---------
     # Fully replaced each run (it's a small reference list, and a deleted

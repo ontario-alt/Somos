@@ -23,6 +23,13 @@ Employee Cost Rate Details export purely as a hint while filling the
 file in (e.g. every "Contractor" is probably blank) -- it isn't used for
 anything once target_type is set.
 
+Optional per-person overrides for individual terms (e.g. an offer letter
+setting a 1,500 chargeable / 1,600 total guideline with no creditable
+allowance): `billable_target` (Hours Expectation), `credit_cap` (creditable
+non-billable allowance), `total_target` (Total Activity),
+`bonus_threshold`. Blank = the role default from config. A row with a billable_target but no
+target_type is still tracked (shown under its own "Custom" role).
+
 If the file doesn't exist yet, generate_starter() creates it from
 whatever's in employee_cost_rates (every employee, target_type blank)
 so there's something to fill in rather than nothing. It is never
@@ -38,11 +45,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
-from etl.common import name_key, parse_vp_date
+from etl.common import name_key, parse_money, parse_vp_date
 
 logger = logging.getLogger("somos.etl.employee_targets")
 
-_FIELDNAMES = ["employee_number", "full_name", "labor_type", "target_type", "start_date", "end_date"]
+_FIELDNAMES = [
+    "employee_number", "full_name", "labor_type", "target_type", "start_date", "end_date",
+    "billable_target", "credit_cap", "total_target", "bonus_threshold",
+]
 
 
 def generate_starter(cost_rows: list[dict], path: Path | None = None) -> Path:
@@ -60,6 +70,10 @@ def generate_starter(cost_rows: list[dict], path: Path | None = None) -> Path:
                     "target_type": "",
                     "start_date": "",
                     "end_date": "",
+                    "billable_target": "",
+                    "credit_cap": "",
+                    "total_target": "",
+                    "bonus_threshold": "",
                 }
             )
     logger.info(
@@ -91,7 +105,7 @@ def parse(cost_rows: list[dict] | None = None, path: Path | None = None) -> list
         for row in csv.DictReader(f):
             raw_type = (row.get("target_type") or "").strip() or None
             target_type = config.resolve_role(raw_type)
-            if raw_type and not target_type:
+            if raw_type and not target_type and not (row.get("billable_target") or "").strip():
                 logger.warning(
                     "Unknown target_type %r for %s in %s (expected one of %s or blank) -- "
                     "treating as no target.",
@@ -109,6 +123,10 @@ def parse(cost_rows: list[dict] | None = None, path: Path | None = None) -> list
                     "target_type": target_type,
                     "start_date": parse_vp_date(row.get("start_date")),
                     "end_date": parse_vp_date(row.get("end_date")),
+                    "billable_target": parse_money(row.get("billable_target")),
+                    "credit_cap": parse_money(row.get("credit_cap")),
+                    "total_target": parse_money(row.get("total_target")),
+                    "bonus_threshold": parse_money(row.get("bonus_threshold")),
                 }
             )
     n_assigned = sum(1 for r in rows if r["target_type"])

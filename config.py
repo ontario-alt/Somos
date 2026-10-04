@@ -97,6 +97,10 @@ SOURCE_FILE_PATTERNS = {
     # the Measuring Period page's creditable-hours scorecard (billable +
     # capped pro bono), monthly pace, and timekeeper / practice-group
     # profitability. See etl/parse_labor_detail.py.
+    # The firm's hand-built "Monthly Hours Report by Timekeeper" workbook
+    # (one tab per timekeeper: requirement header + one row per month).
+    # Backfills closed measuring periods -- see parse_monthly_hours_workbook.py.
+    "monthly_hours_workbook": ["*Monthly*Hours*Report*.xlsx"],
     "labor_detail": ["*Labor*Detail*.csv", "*Labor*Detail*.xlsx", "*Time*Analysis*.csv", "*Time*Analysis*.xlsx"],
     "nte_tracking": ["*NTE*Tracking*.xlsx"],
 }
@@ -199,48 +203,135 @@ AGING_BUCKETS = ["current_0_30", "days_31_60", "days_61_90", "days_91_120", "ove
 AGING_FLAG_THRESHOLDS = (90, 120)  # days -- weekly page flags new items crossing these
 
 # ---------------------------------------------------------------------------
-# Measuring-period hour targets (firm policy). The measuring period is
-# the fiscal year above (Oct 1 - Sep 30). Each hours-required timekeeper
-# has a role -- attorney or planner -- and an annual creditable-hour
-# target for that role. Update the numbers here once; every page that
-# shows targets recalculates.
+# Measuring-period hours policy -- from the firm's "Promotion and Bonus
+# Policy" (last updated 1/15/2023). The measuring period is the fiscal
+# year above (Oct 1 - Sep 30). Update the numbers here once; every page
+# recalculates.
 #
-# Creditable hours = billable hours + pro bono hours, with pro bono
-# capped at PRO_BONO_CREDIT_CAP per person per measuring period (hours
-# above the cap are still reported, just not credited).
+# Hour categories (classified per time entry -- see classify_project()):
+#   client     client-chargeable hours                         all count
+#   foa        Firm's Own Account (282023)                     all count
+#   pro_bono   approved Indigent / Non-Indigent Pro Bono       all count
+#   creditable Creditable Non-Billable (recruiting, CLE, ...)  capped at 75
+#   other      other non-billable (meetings, admin, B&C, ...)  don't count
+#   time_off   PTO / sick / holiday                            don't count
 #
-# Targets are prorated for leave and for partial-year employment:
-#   prorated target = annual target x available workdays / FY workdays
-# where available workdays = Mon-Fri days inside the person's
-# employment window (start_date/end_date in employee_targets.csv), less
-# approved leave from reference/leave.csv (weighted by percent_away, so
-# a 50% reduced schedule counts as half a day away). Ordinary PTO and
-# firm holidays do NOT reduce the target -- the annual number already
-# assumes them.
+# Three tests per person, each with its own annual requirement:
+#   Hours Expectation  client + FOA + pro bono + capped creditable
+#                      >= 1900 Associates (attorneys) / 1600 Planners &
+#                      Project Specialists. Drives promotion; promotion
+#                      in exceptional years needs a 2-year average >= 90%.
+#   Total Activity     all chargeable + non-chargeable (creditable and
+#                      not) >= 2200 / 1800.
+#   Bonus Threshold    client + FOA + capped creditable (pro bono NOT
+#                      included) >= 1850 / 1550 to be eligible for an
+#                      hours bonus; once met, pro bono is added back.
+#
+# All requirements -- and the 75-hour creditable cap, per the policy's
+# last paragraph -- are prorated for a mid-period start/end date and
+# for approved leave:
+#   prorated = annual x available workdays / measuring-period workdays
+# where available workdays = Mon-Fri days inside the employment window
+# (start_date/end_date in employee_targets.csv), less approved leave
+# from reference/leave.csv (weighted by percent_away). Ordinary PTO and
+# holidays do NOT reduce requirements.
 # ---------------------------------------------------------------------------
-BILLABLE_HOUR_TARGETS = {
+BILLABLE_HOUR_TARGETS = {          # Hours Expectation
     "Attorney": 1900,
     "Planner": 1600,
 }
-# Earlier versions of reference/employee_targets.csv used the entity
-# abbreviation as the target type (LLP = law group = attorneys, LLC =
-# planning = planners). Still accepted so an existing file keeps working.
+TOTAL_HOUR_TARGETS = {             # Total Activity
+    "Attorney": 2200,
+    "Planner": 1800,
+}
+BONUS_HOUR_THRESHOLDS = {          # Bonus Threshold
+    "Attorney": 1850,
+    "Planner": 1550,
+}
+CREDITABLE_NB_CAP = 75
+CREDITABLE_CAP_PRORATED = True
+PROMOTION_LOOKBACK_PCT = 90        # 2-year average % of Hours Expectation
+
+# Whether PTO / sick / holiday time counts toward Total Activity. The
+# policy lists PTO and Sick among the non-billable activities that
+# "do not count toward hours-based bonuses" but doesn't say whether they
+# count toward the 2200/1800 total -- excluded until confirmed.
+TOTAL_INCLUDES_TIME_OFF = False
+
+# Individual terms (e.g. an offer letter with a 1,500 / 1,600 guideline
+# and no creditable allowance) go in employee_targets.csv's optional
+# billable_target / credit_cap / total_target / bonus_threshold columns,
+# which override the role defaults above for that person.
+
+# Role names accepted in employee_targets.csv's target_type column.
+# LLP/LLC are from an earlier version of that file (law group =
+# attorneys, planning = planners).
 TARGET_TYPE_ALIASES = {
     "LLP": "Attorney",
     "LLC": "Planner",
+    "ASSOCIATE": "Attorney",
+    "PROJECT SPECIALIST": "Planner",
 }
-PRO_BONO_CREDIT_CAP = 75
-# Whether the 75-hour cap itself shrinks for someone on leave (e.g. a
-# half-year leave -> 37.5 creditable pro bono hours). Policy says targets
-# are prorated; it's silent on the cap, so it's left whole by default.
-PRO_BONO_CAP_PRORATED = False
 
-# How pro bono time is recognized in the labor detail export: a matter
-# code listed here, or a matter name / labor code matching the pattern.
-# Add the firm's pro bono project numbers here if they aren't named
-# "Pro Bono ..." in Vantagepoint.
+# Non-billable time files, by the two-digit prefix of their Vantagepoint
+# project number. The policy cites them with a year suffix (e.g. 382023
+# = Recruiting, 2023 file); any year matches (382024, 382025, ...).
+FOA_PROJECT_PREFIXES = {"28": "Firm's Own Account"}
+CREDITABLE_PROJECT_PREFIXES = {
+    "38": "Recruiting",
+    "31": "PGL/Team Work",
+    "50": "Mandatory CLE",
+    "29": "Client Development",
+    "49": "Internal Education",
+    "30": "Career Development",
+    "51": "Non-Legal Pro Bono",
+    "52": "Diversity & Inclusion",
+    "53": "Innovation",
+}
+OTHER_NB_PROJECT_PREFIXES = {
+    "78": "Public/Alumni Activities / Sick",
+    "45": "Billings and Collections",
+    "32": "Practice Group/Firm Meetings",
+    "56": "Firm Committee/Practice Group Administration",
+    "33": "Other Office Time",
+}
+TIME_OFF_PROJECT_PREFIXES = {"37": "Paid Time Off"}
+
+# Approved pro bono matters: listed project numbers, or a project name /
+# labor code matching the pattern ("Indigent Pro Bono", "Non-Indigent
+# Pro Bono", ...). "Non-Legal Pro Bono" (51xxxx) is creditable, not pro
+# bono -- project-number classification runs first, so it's never
+# caught by this pattern.
 PRO_BONO_MATTER_CODES: list[str] = []
 PRO_BONO_NAME_PATTERN = r"pro[\s\-]*bono"
+TIME_OFF_PATTERN = r"\b(pto|holiday|vacation|sick|bereavement|jury duty|paid time off)\b"
+
+
+def classify_project(matter_code: str | None, matter_name: str | None = None,
+                     labor_code: str | None = None) -> str | None:
+    """Policy category for a non-billable time file, or None for a
+    client matter (whose billing status then decides client vs. other)."""
+    import re as _re
+
+    code = (matter_code or "").strip()
+    m = _re.fullmatch(r"(\d{2})(?:20)?\d{2}", code)
+    if m:
+        prefix = m.group(1)
+        for cat, table in (("foa", FOA_PROJECT_PREFIXES), ("creditable", CREDITABLE_PROJECT_PREFIXES),
+                           ("time_off", TIME_OFF_PROJECT_PREFIXES), ("other", OTHER_NB_PROJECT_PREFIXES)):
+            if prefix in table:
+                if cat == "other" and _re.search(TIME_OFF_PATTERN, f"{matter_name} {labor_code}", _re.I):
+                    return "time_off"  # 78xxxx is shared by Public/Alumni and Sick
+                return cat
+    if code.upper() in {c.strip().upper() for c in PRO_BONO_MATTER_CODES}:
+        return "pro_bono"
+    text = f"{matter_name or ''} {labor_code or ''}"
+    if _re.search(PRO_BONO_NAME_PATTERN, text, _re.I) and not _re.search(r"non[\s\-]*legal", text, _re.I):
+        return "pro_bono"
+    if _re.search(TIME_OFF_PATTERN, text, _re.I):
+        return "time_off"
+    return None
+
 
 # Vantagepoint billing status codes that count as billable hours worked.
 # B = billable, H = held, F = final billed, T = transferred. Written-off

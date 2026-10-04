@@ -2,13 +2,15 @@
 Measuring-period hours policy, as plain pandas (no Streamlit) so the math
 can be checked on its own:
 
-  * Annual target by role (config.BILLABLE_HOUR_TARGETS).
-  * Prorated for partial-year employment and approved leave, on Mon-Fri
-    workdays: target x available workdays / measuring-period workdays.
-  * Creditable hours = billable + pro bono, pro bono capped at
-    config.PRO_BONO_CREDIT_CAP per person (optionally prorated too).
-  * Pace = creditable hours vs. expected-to-date, where expected-to-date
-    is the prorated target scaled by the share of that person's own
+  * The firm's Promotion and Bonus Policy (see config.py): Hours
+    Expectation (client + FOA + pro bono + creditable non-billable capped
+    at 75), Total Activity (all chargeable + non-chargeable), and the
+    Bonus Threshold (client + FOA + capped creditable, no pro bono).
+  * Every requirement -- and the creditable cap -- prorated for
+    partial-year employment and approved leave, on Mon-Fri workdays:
+    annual x available workdays / measuring-period workdays.
+  * Pace = hours vs. expected-to-date, where expected-to-date is the
+    prorated requirement scaled by the share of that person's own
     available workdays that have elapsed -- so someone back from three
     months of leave isn't marked behind for the months they were out.
 
@@ -25,7 +27,7 @@ import pandas as pd
 
 import config
 
-STATUS_ORDER = ["Behind", "Watch", "On Track", "Met"]
+STATUS_ORDER = ["Not Met", "Behind", "Watch", "On Track", "Met"]
 
 
 def _ts(d) -> pd.Timestamp | None:
@@ -83,6 +85,8 @@ def _leaves_for(person: pd.Series, leave: pd.DataFrame | None) -> list[tuple]:
 def status_for(creditable: float, target: float, expected: float) -> str:
     if target > 0 and creditable >= target:
         return "Met"
+    if target > 0 and expected >= target - 1e-9:
+        return "Not Met"  # period over (for this person) and short of the requirement
     if expected <= 0:
         return "On Track"
     ratio = creditable / expected
@@ -94,6 +98,47 @@ def status_for(creditable: float, target: float, expected: float) -> str:
     return "Behind"
 
 
+def _num_or_none(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if np.isnan(f) else f
+
+
+def person_targets(p: pd.Series) -> dict:
+    """Annual requirements for one person: their own override from
+    employee_targets.csv (individual terms) where set, else their role's
+    default from config. Keys: expectation, cap, total, bonus (None =
+    no such requirement)."""
+    role = p.get("role")
+
+    def pick(col, default):
+        v = _num_or_none(p.get(col))
+        return v if v is not None else (float(default) if default is not None else None)
+
+    return {
+        "expectation": pick("billable_target", config.BILLABLE_HOUR_TARGETS.get(role)),
+        "cap": pick("credit_cap", config.CREDITABLE_NB_CAP),
+        "total": pick("total_target", config.TOTAL_HOUR_TARGETS.get(role)),
+        "bonus": pick("bonus_threshold", config.BONUS_HOUR_THRESHOLDS.get(role)),
+    }
+
+
+def _worse(a: str, b: str | None) -> str:
+    if not b:
+        return a
+    return min(a, b, key=STATUS_ORDER.index)
+
+
+HOURS_COLS = ["client_hours", "foa_hours", "pro_bono_hours", "creditable_hours", "other_hours", "time_off_hours"]
+
+
+def _total_activity(h: dict) -> float:
+    total = h["client_hours"] + h["foa_hours"] + h["pro_bono_hours"] + h["creditable_hours"] + h["other_hours"]
+    return total + (h["time_off_hours"] if config.TOTAL_INCLUDES_TIME_OFF else 0.0)
+
+
 def build_scorecard(
     people: pd.DataFrame,
     hours: pd.DataFrame,
@@ -102,11 +147,14 @@ def build_scorecard(
     period_end,
     as_of,
 ) -> pd.DataFrame:
-    """people: name_key, full_name, employee_number, role, start_date, end_date
-    hours:  name_key, billable_hours, pro_bono_hours (to date), optionally entities
+    """people: name_key, full_name, employee_number, role, start_date, end_date,
+               optional billable_target / credit_cap / total_target / bonus_threshold
+    hours:  name_key + HOURS_COLS (hours to date by policy category), optional entities
     leave:  name_key, employee_number, leave_start, leave_end, percent_away
 
-    Returns one row per person with a role, with target, credit and pace columns."""
+    One row per tracked person (anyone with an Hours Expectation from role
+    or override), scored on the policy's three tests: Hours Expectation,
+    Total Activity and Bonus Threshold."""
     period_start, period_end, as_of = _ts(period_start), _ts(period_end), _ts(as_of)
     as_of = min(max(as_of, period_start - pd.Timedelta(days=1)), period_end)
     period_wd = len(workdays(period_start, period_end))
@@ -114,87 +162,134 @@ def build_scorecard(
 
     out = []
     for _, p in people.iterrows():
-        role = p.get("role")
-        if role not in config.BILLABLE_HOUR_TARGETS:
+        t = person_targets(p)
+        if t["expectation"] is None:
             continue
-        annual = float(config.BILLABLE_HOUR_TARGETS[role])
-        person_leaves = _leaves_for(p, leave)
-        avail = availability(period_start, period_end, p.get("start_date"), p.get("end_date"), person_leaves)
+        role = p.get("role") if p.get("role") in config.BILLABLE_HOUR_TARGETS else "Custom"
+        avail = availability(period_start, period_end, p.get("start_date"), p.get("end_date"), _leaves_for(p, leave))
         avail_total = float(avail.sum())
         avail_elapsed = float(avail[avail.index <= as_of].sum())
         share = avail_total / period_wd if period_wd else 0.0
-        target = annual * share
         elapsed_frac = avail_elapsed / avail_total if avail_total else 0.0
-        expected = target * elapsed_frac
-
-        # Employment-window workdays not available = leave days (weighted).
         employed = availability(period_start, period_end, p.get("start_date"), p.get("end_date"))
         leave_days = float(employed.sum() - avail_total)
+        remaining_weeks = (avail_total - avail_elapsed) / 5.0
+
+        def prorate(annual):
+            return annual * share if annual is not None else None
 
         key = p.get("name_key")
-        h = hrs.loc[key] if key in hrs.index else None
-        billable = float(h["billable_hours"]) if h is not None else 0.0
-        pro_bono = float(h["pro_bono_hours"]) if h is not None else 0.0
-        cap = config.PRO_BONO_CREDIT_CAP * (share if config.PRO_BONO_CAP_PRORATED else 1.0)
-        pb_credited = min(pro_bono, cap)
-        creditable = billable + pb_credited
-        remaining = max(target - creditable, 0.0)
-        remaining_weeks = (avail_total - avail_elapsed) / 5.0
+        hrow = hrs.loc[key] if key in hrs.index else None
+        h = {c: (float(hrow[c]) if hrow is not None and c in hrow and pd.notna(hrow[c]) else 0.0) for c in HOURS_COLS}
+
+        cap = t["cap"] * (share if config.CREDITABLE_CAP_PRORATED else 1.0)
+        counted = min(h["creditable_hours"], cap)
+        chargeable = h["client_hours"] + h["foa_hours"]
+        credited = chargeable + h["pro_bono_hours"] + counted
+        bonus_hours = chargeable + counted
+        total_hours = _total_activity(h)
+
+        exp_target = prorate(t["expectation"])
+        exp_expected = exp_target * elapsed_frac
+        exp_status = status_for(credited, exp_target, exp_expected)
+        remaining = max(exp_target - credited, 0.0)
+        projected = credited / elapsed_frac if elapsed_frac > 0 else np.nan
+
+        total_target = prorate(t["total"])
+        total_status = status_for(total_hours, total_target, total_target * elapsed_frac) if total_target else None
+
+        bonus_target = prorate(t["bonus"])
+        if bonus_target is None:
+            bonus_status, bonus_credited = "", np.nan
+        elif bonus_hours >= bonus_target:
+            bonus_status, bonus_credited = "Eligible", bonus_hours + h["pro_bono_hours"]
+        else:
+            bonus_proj = bonus_hours / elapsed_frac if elapsed_frac > 0 else 0.0
+            bonus_status = "On pace" if bonus_proj >= bonus_target and elapsed_frac < 1 else "Not met" if elapsed_frac >= 1 else "Not on pace"
+            bonus_credited = np.nan
 
         out.append(
             {
                 "name_key": key,
                 "Timekeeper": p.get("full_name"),
                 "Role": role,
-                "Entities": (h.get("entities") if h is not None and "entities" in h else None) or "",
-                "Annual Target": annual,
+                "Entities": (hrow.get("entities") if hrow is not None and "entities" in hrow else None) or "",
                 "Leave Days": round(leave_days, 1),
-                "Prorated Target": target,
-                "Billable": billable,
-                "Pro Bono (logged)": pro_bono,
-                "Pro Bono (credited)": pb_credited,
-                "Pro Bono (over cap)": pro_bono - pb_credited,
-                "Creditable": creditable,
-                "Expected to Date": expected,
-                "Variance to Expected": creditable - expected,
-                "% of Target": (creditable / target * 100) if target else np.nan,
-                "Pace %": (creditable / expected * 100) if expected else np.nan,
-                "Projected": (creditable / elapsed_frac) if elapsed_frac > 0 else np.nan,
+                "Client": h["client_hours"],
+                "FOA": h["foa_hours"],
+                "Pro Bono": h["pro_bono_hours"],
+                "Creditable NB (logged)": h["creditable_hours"],
+                "Creditable Cap": cap,
+                "Creditable NB (counted)": counted,
+                "Creditable NB (over cap)": h["creditable_hours"] - counted,
+                "Other NB": h["other_hours"],
+                "Time Off": h["time_off_hours"],
+                "Annual Expectation": t["expectation"],
+                "Expectation": exp_target,
+                "Credited Hours": credited,
+                "Expected to Date": exp_expected,
+                "Variance to Expected": credited - exp_expected,
+                "% of Expectation": credited / exp_target * 100 if exp_target else np.nan,
+                "Pace %": credited / exp_expected * 100 if exp_expected else np.nan,
+                "Projected": projected,
                 "Remaining": remaining,
-                "Needed / Week": (remaining / remaining_weeks) if remaining_weeks > 0 and remaining > 0 else 0.0,
-                "Status": status_for(creditable, target, expected),
-                "has_hours": h is not None,
+                "Needed / Week": remaining / remaining_weeks if remaining_weeks > 0 and remaining > 0 else 0.0,
+                "Expectation Status": exp_status,
+                "Total Hours": total_hours,
+                "Total Expectation": total_target if total_target is not None else np.nan,
+                "Total %": total_hours / total_target * 100 if total_target else np.nan,
+                "Total Status": total_status or "",
+                "Bonus Hours": bonus_hours,
+                "Bonus Threshold": bonus_target if bonus_target is not None else np.nan,
+                "Bonus %": bonus_hours / bonus_target * 100 if bonus_target else np.nan,
+                "Bonus Status": bonus_status,
+                "Bonus Credited Hours": bonus_credited,
+                "Status": _worse(exp_status, total_status),
+                "has_hours": hrow is not None,
             }
         )
-    cols = [
-        "name_key", "Timekeeper", "Role", "Entities", "Annual Target", "Leave Days", "Prorated Target",
-        "Billable", "Pro Bono (logged)", "Pro Bono (credited)", "Pro Bono (over cap)", "Creditable",
-        "Expected to Date", "Variance to Expected", "% of Target", "Pace %", "Projected", "Remaining",
-        "Needed / Week", "Status", "has_hours",
-    ]
-    return pd.DataFrame(out, columns=cols)
+    return pd.DataFrame(out, columns=SCORECARD_COLS)
+
+
+SCORECARD_COLS = [
+    "name_key", "Timekeeper", "Role", "Entities", "Leave Days", "Client", "FOA", "Pro Bono",
+    "Creditable NB (logged)", "Creditable Cap", "Creditable NB (counted)", "Creditable NB (over cap)",
+    "Other NB", "Time Off", "Annual Expectation", "Expectation", "Credited Hours", "Expected to Date",
+    "Variance to Expected", "% of Expectation", "Pace %", "Projected", "Remaining", "Needed / Week",
+    "Expectation Status", "Total Hours", "Total Expectation", "Total %", "Total Status", "Bonus Hours",
+    "Bonus Threshold", "Bonus %", "Bonus Status", "Bonus Credited Hours", "Status", "has_hours",
+]
 
 
 def cumulative_pace(
     monthly: pd.DataFrame, person: pd.Series, scorecard_row: pd.Series, leave: pd.DataFrame | None,
     period_start, period_end,
 ) -> pd.DataFrame:
-    """Month-end cumulative creditable hours (pro bono cap applied to the
-    running total) vs. the prorated target's expected path for one person.
-    monthly: month (Timestamp, month start), billable_hours, pro_bono_hours."""
+    """Month-end cumulative Credited Hours (creditable cap applied to the
+    running total) and Total Activity vs. each prorated requirement's
+    expected path for one person. monthly: month + HOURS_COLS."""
     period_start, period_end = _ts(period_start), _ts(period_end)
     avail = availability(
         period_start, period_end, person.get("start_date"), person.get("end_date"), _leaves_for(person, leave)
     )
     months = pd.date_range(period_start, period_end, freq="MS")
     m = monthly.set_index("month").reindex(months).fillna(0.0)
-    share = scorecard_row["Prorated Target"] / scorecard_row["Annual Target"] if scorecard_row["Annual Target"] else 0.0
-    cap = config.PRO_BONO_CREDIT_CAP * (share if config.PRO_BONO_CAP_PRORATED else 1.0)
-    credited = m["billable_hours"].cumsum() + np.minimum(m["pro_bono_hours"].cumsum(), cap)
+    for c in HOURS_COLS:
+        if c not in m:
+            m[c] = 0.0
+    credited = (m["client_hours"] + m["foa_hours"] + m["pro_bono_hours"]).cumsum() + np.minimum(
+        m["creditable_hours"].cumsum(), scorecard_row["Creditable Cap"]
+    )
     total = avail.sum()
     month_end = months + pd.offsets.MonthEnd(0)
-    expected = [scorecard_row["Prorated Target"] * (avail[avail.index <= me].sum() / total if total else 0) for me in month_end]
-    return pd.DataFrame({"month": months, "creditable_cum": credited.values, "expected_cum": expected})
+    frac = np.array([avail[avail.index <= me].sum() / total if total else 0 for me in month_end])
+    out = pd.DataFrame(
+        {"month": months, "creditable_cum": credited.values, "expected_cum": scorecard_row["Expectation"] * frac}
+    )
+    if pd.notna(scorecard_row.get("Total Expectation")):
+        out["total_cum"] = m.apply(lambda r: _total_activity(r), axis=1).cumsum().values
+        out["total_expected_cum"] = scorecard_row["Total Expectation"] * frac
+    return out
 
 
 def salary_cost(monthly_rate: float, start, end) -> float:

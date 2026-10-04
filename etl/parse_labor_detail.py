@@ -29,18 +29,19 @@ headers, subtotals, grand totals) are skipped, so a grouped report
 flattens fine as long as each detail row carries its own employee and
 date.
 
-Pro bono: a row is pro bono if its project number is in
-config.PRO_BONO_MATTER_CODES or its project name / labor code matches
-config.PRO_BONO_NAME_PATTERN. Billable: billing status in
-config.LABOR_BILLABLE_STATUS_CODES (pro bono rows are never billable,
-even if a status code says otherwise). With no billing status column at
-all, every non-pro-bono row on a client matter counts as billable and a
+Each row gets an `hours_category` per the firm's Promotion and Bonus
+Policy (config.classify_project): foa / creditable / other / time_off
+for the firm's non-billable time files (by project-number prefix, e.g.
+38xxxx = Recruiting), pro_bono for approved pro bono matters, and for
+client matters "client" when the billing status is in
+config.LABOR_BILLABLE_STATUS_CODES, else "other". With no billing status
+column at all, every client-matter row counts as client time and a
 warning is logged.
 
 Output grain: one row per time entry:
     entity, employee_number, employee_name, name_key, transaction_date,
     matter_code, matter_name, labor_code, billing_status, hours,
-    is_billable, is_pro_bono, standard_value, billed_amount, cost_amount,
+    hours_category, is_billable, is_pro_bono, is_time_off, standard_value, billed_amount, cost_amount,
     source_file
 """
 from __future__ import annotations
@@ -146,13 +147,6 @@ def _cell_num(v) -> float | None:
     return parse_money(_cell_str(v))
 
 
-def _is_pro_bono(matter_code: str, matter_name: str, labor_code: str, pattern: re.Pattern) -> bool:
-    codes = {c.strip().upper() for c in config.PRO_BONO_MATTER_CODES}
-    if matter_code and matter_code.upper() in codes:
-        return True
-    return bool(pattern.search(matter_name or "") or pattern.search(labor_code or ""))
-
-
 def _is_billable(status: str | None, has_status_col: bool) -> bool:
     if not has_status_col:
         return True
@@ -187,7 +181,6 @@ def _parse_one(path: Path) -> list[dict]:
     if missing:
         logger.warning("%s has no %s column(s) -- related figures will be blank or assumed", path.name, missing)
 
-    pattern = re.compile(config.PRO_BONO_NAME_PATTERN, re.IGNORECASE)
     has_status = "billing_status" in col_idx
 
     def get(row, field):
@@ -207,7 +200,9 @@ def _parse_one(path: Path) -> list[dict]:
         matter_name = _cell_str(get(raw, "matter_name"))
         labor_code = _cell_str(get(raw, "labor_code"))
         status = _cell_str(get(raw, "billing_status")) or None
-        pro_bono = _is_pro_bono(matter_code, matter_name, labor_code, pattern)
+        category = config.classify_project(matter_code, matter_name, labor_code)
+        if category is None:
+            category = "client" if _is_billable(status, has_status) else "other"
         rows.append(
             {
                 "entity": _cell_str(get(raw, "entity")) or None,
@@ -220,8 +215,11 @@ def _parse_one(path: Path) -> list[dict]:
                 "labor_code": labor_code or None,
                 "billing_status": status,
                 "hours": hours,
-                "is_billable": (not pro_bono) and _is_billable(status, has_status),
-                "is_pro_bono": pro_bono,
+                "hours_category": category,
+                # Convenience flags (client chargeable, incl. FOA; pro bono; time off).
+                "is_billable": category in ("client", "foa"),
+                "is_pro_bono": category == "pro_bono",
+                "is_time_off": category == "time_off",
                 "standard_value": _cell_num(get(raw, "standard_value")),
                 "billed_amount": _cell_num(get(raw, "billed_amount")),
                 "cost_amount": _cell_num(get(raw, "cost_amount")),
@@ -231,15 +229,16 @@ def _parse_one(path: Path) -> list[dict]:
 
     if not has_status:
         logger.warning(
-            "%s has no billing status column -- every non-pro-bono row is being counted as "
+            "%s has no billing status column -- every client-matter row is being counted as "
             "billable. Add Billing Status to the export so non-billable time is excluded.",
             path.name,
         )
-    total = sum(r["hours"] for r in rows)
-    pb = sum(r["hours"] for r in rows if r["is_pro_bono"])
+    by_cat: dict[str, float] = {}
+    for r in rows:
+        by_cat[r["hours_category"]] = by_cat.get(r["hours_category"], 0.0) + r["hours"]
     logger.info(
-        "Parsed %d time entries from %s (%.1f hours, %.1f pro bono; %d non-detail rows skipped)",
-        len(rows), path.name, total, pb, skipped,
+        "Parsed %d time entries from %s (%d non-detail rows skipped). Hours by policy category: %s",
+        len(rows), path.name, skipped, {k: round(v, 1) for k, v in sorted(by_cat.items())},
     )
     return rows
 
