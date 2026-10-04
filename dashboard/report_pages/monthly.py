@@ -605,13 +605,14 @@ def _section_timekeeper():
             "WHERE billing_status = 'B' AND snapshot_date = (SELECT MAX(snapshot_date) FROM wip_transactions)"
         ).iloc[0]
         days_span = max((span["hi"] - span["lo"]).days + 1, 1) if span["lo"] is not None else 30
-        credit = config.BILLABLE_HOUR_CREDIT if config.EMPLOYEE_TARGETS_CREDIT_REDUCES_TARGET else 0
-
+        # Billable-only utilization against the full role target -- pro
+        # bono credit (capped) and leave proration are applied on the
+        # Measuring Period page, which has the data for both.
         def _prorated_target(target_type):
-            if not target_type or target_type not in config.BILLABLE_HOUR_TARGETS:
+            role = config.resolve_role(target_type)
+            if not role:
                 return None
-            annual = config.BILLABLE_HOUR_TARGETS[target_type] - credit
-            return annual * (days_span / 365.0)
+            return config.BILLABLE_HOUR_TARGETS[role] * (days_span / 365.0)
 
         target_hours = pd.to_numeric(df["target_type"].map(_prorated_target), errors="coerce")
         utilization_pct = (df["billable_hours"] / target_hours * 100).round(1)

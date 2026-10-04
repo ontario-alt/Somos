@@ -18,22 +18,85 @@ dashboard/charts/  reusable Plotly chart components
 config.py          paths, entity list, fiscal year, targets -- edit this, not the code
 ```
 
-## Billable-hour targets (utilization)
+## Measuring period hours & profitability
 
-`reference/employee_targets.csv` assigns each employee a `target_type`
-("LLC", "LLP", or blank for no target -- executives, admin, consultants
-typically have none). The annual target hours and credit for each type
-live in `config.py` (`BILLABLE_HOUR_TARGETS`, `BILLABLE_HOUR_CREDIT`) --
-change a number there and every utilization figure recalculates.
+The measuring period is the fiscal year, **Oct 1 - Sep 30**. The Measuring
+Period page scores every hours-required timekeeper against firm policy:
 
-The file isn't a Vantagepoint export -- nothing in Vantagepoint says
-who's exempt or which target type applies to whom, that's firm policy.
-If it doesn't exist yet, `python etl/build_warehouse.py` generates a
-starter with every current employee and `target_type` left blank; open
-it, fill in `target_type` for each row, and re-run. It's never
-regenerated once it exists, so your edits are safe across runs. It's
-also gitignored (real employee names), so this is a one-time local setup
-per machine, not something that comes from the repo.
+| Rule | Where it lives |
+|---|---|
+| Annual target by role: Attorney / Planner | `config.BILLABLE_HOUR_TARGETS` (currently 1,900 / 1,600, **confirm**) |
+| Creditable hours = billable + pro bono, pro bono credit capped at 75 hrs | `config.PRO_BONO_CREDIT_CAP` (`PRO_BONO_CAP_PRORATED` if the cap also shrinks with leave) |
+| How pro bono time is recognized | `config.PRO_BONO_MATTER_CODES` / `PRO_BONO_NAME_PATTERN` (matter name or labor code containing "pro bono") |
+| Which billing statuses count as billable | `config.LABOR_BILLABLE_STATUS_CODES` (B, H, F, T; written-off W/X excluded) |
+| Target prorated for leave and mid-year start/leave | `reference/leave.csv` + `start_date`/`end_date` in `reference/employee_targets.csv` |
+| On Track / Watch / Behind bands | `config.PACE_STATUS_THRESHOLDS` (95% / 85% of expected-to-date) |
+
+**Proration** is on Mon-Fri workdays: `target x available workdays / period
+workdays`. Approved leave is weighted by `percent_away` (so a half-time
+schedule counts as half a day out), and ordinary PTO and holidays don't
+reduce the target. "Expected to date" is the prorated target times the
+share of *that person's* available workdays that have passed, so someone
+back from leave isn't marked behind for the months they were out.
+
+**What the page shows:** status counts and team pace, a progress bar per
+person (with a tick showing where they should be by now), Attorney and
+Planner tables (prorated target, leave days, billable, pro bono logged and
+credited, creditable, variance, projected year-end, hours per week still
+needed), a CSV download for review meetings, a month-by-month pace chart
+per person, and data checks (name mismatches, exempt people billing heavily,
+leave rows that don't match anyone). **Timekeeper Profitability** shows
+revenue against direct labor cost by person and role, and **Practice
+Group Profitability** now covers every matter with time logged, not just the
+NTE-capped ones. Use the "Hours through" date to review a closed period (for
+example 9/30/2026 for FY26).
+
+### What you need from Vantagepoint
+
+1. **Labor detail (time detail) export**, the main source. It's one row per time
+   entry for 10/1 to the review date (or the full year), all employees, CSV or
+   Excel, with a filename containing "Labor Detail" or "Time Analysis".
+   Columns: Employee Name, Employee Number, Transaction Date, Project Number,
+   Project Name, Labor Code, Billing Status, Hours, Billing Extension, Billed
+   Amount, Cost Extension, Company. Header names are matched loosely (see
+   `_ALIASES` in `etl/parse_labor_detail.py`). Billed Amount and Cost
+   Extension are optional. Without them revenue falls back to standard
+   value, and cost falls back to the cost-rate export below.
+2. **Employee Cost Rate Details**, which the app already loads, for labor cost.
+3. **Matter List**, also already loaded, for the practice-group view.
+4. *(Fallback)* **All Timekeepers Hours**. If no labor detail is loaded,
+   the scorecard uses this summary, treating its Credited Hours column as
+   pro bono. The page shows a warning when that happens. It has no monthly
+   pace and no dollars.
+
+### What you maintain by hand (firm policy, not in Vantagepoint)
+
+`reference/employee_targets.csv`: one row per employee. Columns:
+
+    employee_number,full_name,labor_type,target_type,start_date,end_date
+    101,Maria Lopez,Employee,Attorney,,
+    104,James Okafor,Employee,Attorney,3/2/2026,
+    204,Ethan Wright,Employee,Planner,,6/30/2026
+    003,Alfred Fraijo Jr.,Principal,,,
+
+`target_type` is `Attorney`, `Planner`, or blank (no target). Legacy `LLP`
+and `LLC` values still work as Attorney and Planner. `python
+etl/build_warehouse.py` generates a starter from the cost-rate export the
+first time. It's never overwritten after that.
+
+`reference/leave.csv`: one row per approved leave of absence:
+
+    full_name,employee_number,leave_start,leave_end,percent_away,leave_type,note
+    Lauren Kim,202,1/5/2026,3/27/2026,100,Parental,
+    Ana Ruiz,105,6/1/2026,8/28/2026,50,Reduced schedule,
+
+An empty file (header only) is created on the first build. Both files are
+gitignored because they contain real names. Set `SOMOS_REFERENCE_DIR` to
+keep them in the shared SharePoint folder so the whole team edits one copy.
+
+Names are matched across exports regardless of format ("Lopez, Maria" and
+"Maria Lopez" match). Anyone who doesn't match is listed under the page's
+**Data checks**.
 
 ## Monthly refresh (bookkeeping team)
 
@@ -83,7 +146,9 @@ same command either way; the weekly page just reads whatever's newest.
 | Project earnings & labor | **Stub** -- no sample export provided yet. This is the source needed for real timekeeper cost/utilization/realization; WIP only carries hours and billing value at standard rate, not cost or a billed-vs-worked distinction. |
 | AR Aging workbook | Parsed (`etl/parse_ar_aging_workbook.py`) from the hand-built "Somos_AR_Aging_MM.DD.YYYY.xlsx" report (the same one that defined this app's own weekly AR page) -- its "AR Aging Detail" tab already has real Entity/Client/Matter columns, no PDF/string-splitting needed. Feeds the same `ar_aging_detail` table as the raw "All AR Report" export, deduped by date so the two sources never double-count. |
 | GBNF (Gone But Not Forgotten) | Parsed (`etl/parse_gbnf.py`) from the "GBNF AR Aged" export -- old collectibles the firm tracks separately. Its own `gbnf_ar_aging` table, deliberately never merged into `ar_aging_detail`, so a GBNF matter's balance never inflates the regular aging book's Over 120/oldest totals or the Monthly page's Total AR. Shown in its own section on the Weekly page. |
-| Timekeeper hours (measuring period) | Parsed (`etl/parse_timekeeper_hours.py`) from the "All Timekeepers Hours" export -- per-employee, per-entity hours (total/billable/credited/PTO/HOL) for the current fiscal year. Powers the Measuring Period page's hours-required-individuals-by-entity tracker: real per-person credited hours (not the flat `BILLABLE_HOUR_CREDIT` assumption), a straight-line pace projection to fiscal year end, and Pace vs. Target. Only shows employees whose `target_type` is set in `reference/employee_targets.csv`. Hours-to-date, not a final figure -- re-upload the same export any time (e.g. month-end close) to refresh with newer actuals; it replaces rather than accumulates, since the period itself doesn't change mid-year. |
+| Labor detail (time entries) | Parsed (`etl/parse_labor_detail.py`). **Not yet verified against a real export.** It was built from Vantagepoint's standard labor fields and tested on synthetic data, so check the build log's hours and pro bono totals against Vantagepoint the first time. This is the preferred source for the measuring-period scorecard (pro bono split, monthly pace) and for timekeeper and practice-group profitability. |
+| Approved leave | Hand-maintained `reference/leave.csv` (`etl/parse_leave.py`) and used to prorate targets. |
+| Timekeeper hours (measuring period) | Parsed (`etl/parse_timekeeper_hours.py`) from the "All Timekeepers Hours" export -- per-employee, per-entity hours (total/billable/credited/PTO/HOL) for the current fiscal year. Powers the Measuring Period page's hours-required-individuals-by-entity tracker: now the *fallback* hours source for the creditable-hours scorecard when no labor detail export is loaded (Credited Hours treated as pro bono, capped at 75). Hours-to-date, not a final figure -- re-upload the same export any time (e.g. month-end close) to refresh with newer actuals; it replaces rather than accumulates, since the period itself doesn't change mid-year. |
 
 `etl/build_warehouse.py` skips any stubbed source with a warning rather
 than failing the whole build, so the warehouse always builds from

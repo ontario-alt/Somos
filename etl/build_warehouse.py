@@ -48,6 +48,8 @@ from etl import (
     parse_employee_cost,
     parse_employee_targets,
     parse_gl,
+    parse_labor_detail,
+    parse_leave,
     parse_matter_earnings,
     parse_matter_list,
     parse_originations,
@@ -62,7 +64,19 @@ logger = logging.getLogger("somos.etl.warehouse")
 # snapshot (e.g. no AR comments this period) -- pandas would otherwise
 # infer an ambiguous dtype from all-NaN data and DuckDB could pick the
 # wrong column type. Force these to string explicitly.
-_TEXT_COLUMNS = {"ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no", "client_name_confidence", "target_type"}
+_TEXT_COLUMNS = {
+    "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
+    "client_name_confidence", "target_type", "employee_number", "name_key", "matter_name",
+    "labor_code", "billing_status", "leave_type", "note",
+}
+# Optional date columns that are often entirely blank (nobody joined or
+# left mid-period, no open-ended leave) -- an all-None column would
+# otherwise land in DuckDB with no usable type.
+_DATE_COLUMNS = {"start_date", "end_date", "leave_start", "leave_end"}
+# Optional dollar columns (labor detail exports vary in which extensions
+# they carry) -- forced to float so an all-blank column doesn't land as
+# INTEGER and then reject real values on a later upsert.
+_FLOAT_COLUMNS = {"standard_value", "billed_amount", "cost_amount"}
 
 
 def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
@@ -98,6 +112,11 @@ def _create_table(
     df = pd.DataFrame(rows)
     for col in _TEXT_COLUMNS & set(df.columns):
         df[col] = df[col].astype("string")
+    for col in _FLOAT_COLUMNS & set(df.columns):
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+    for col in _DATE_COLUMNS & set(df.columns):
+        df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+        df[col] = df[col].astype("date32[pyarrow]")
     con.register("_tmp_rows", df)
     if not _table_exists(con, table):
         con.execute(f"CREATE TABLE {table} AS SELECT * FROM _tmp_rows")
@@ -205,8 +224,13 @@ def build(snapshot_date: date | None = None) -> Path:
     _create_table(con, "employee_cost_rates", cost_rows, snapshot_date)
 
     # --- Employee billable-hour targets (hand-maintained, see the file) ---
+    # Fully replaced each run like employee_leave below: it's a small
+    # hand-maintained file whose columns have grown over time (role,
+    # start/end dates), so upserting into an older table's schema would fail.
     target_rows = parse_employee_targets.parse(cost_rows)
     parse_employee_targets.write_processed(target_rows)
+    if target_rows:
+        con.execute("DROP TABLE IF EXISTS employee_targets")
     _create_table(con, "employee_targets", target_rows, snapshot_date)
 
     # --- Matter earnings (NTE-tracked matters only -- real revenue/profit) --
@@ -229,6 +253,21 @@ def build(snapshot_date: date | None = None) -> Path:
     tk_hours_rows = parse_timekeeper_hours.parse()
     parse_timekeeper_hours.write_processed(tk_hours_rows)
     _create_table(con, "timekeeper_hours", tk_hours_rows, snapshot_date, snapshot_date_col="period_end")
+
+    # --- Labor (time) detail -- transaction-level, measuring period -------
+    # Each row keeps its own work date as snapshot_date, so a fresh
+    # FY-to-date export replaces exactly the dates it covers.
+    labor_rows = parse_labor_detail.parse()
+    parse_labor_detail.write_processed(labor_rows)
+    _create_table(con, "labor_detail", labor_rows, snapshot_date, snapshot_date_col="transaction_date")
+
+    # --- Approved leave (hand-maintained, prorates hour targets) ---------
+    # Fully replaced each run (it's a small reference list, and a deleted
+    # row must actually disappear rather than linger under an old date).
+    leave_rows = parse_leave.parse()
+    parse_leave.write_processed(leave_rows)
+    con.execute("DROP TABLE IF EXISTS employee_leave")
+    _create_table(con, "employee_leave", leave_rows, snapshot_date)
 
     con.close()
     logger.info("Warehouse build complete -> %s", config.WAREHOUSE_PATH)

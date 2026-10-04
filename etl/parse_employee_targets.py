@@ -3,18 +3,24 @@ Load (or, on first run, generate a starter for) the hand-maintained
 employee billable-hour target assignment -- reference/employee_targets.csv.
 
 Unlike everything else in etl/, this isn't parsed from a Vantagepoint
-export: which timekeepers owe 1600 hours, which owe 1900, and which have
-no target at all (executives, admin, consultants) is firm policy, not
-something in any report. So this is a plain CSV the user edits by hand:
+export: who is an attorney, who is a planner, and who has no target at
+all (executives, admin, consultants) is firm policy, not something in
+any report. So this is a plain CSV the user edits by hand:
 
-    employee_number,full_name,labor_type,target_type
-    048,Ramneek Saini,Employee,LLC
-    003,Alfred Fraijo Jr.,Principal,
+    employee_number,full_name,labor_type,target_type,start_date,end_date
+    048,Ramneek Saini,Employee,Planner,,
+    051,Jane Example,Employee,Attorney,2/16/2026,
+    003,Alfred Fraijo Jr.,Principal,,,
 
-`target_type` is one of config.BILLABLE_HOUR_TARGETS' keys ("LLC"/"LLP")
-or blank for no target. `labor_type` is carried over from the Employee
-Cost Rate Details export purely as a hint while filling the file in
-(e.g. every "Contractor" is probably blank) -- it isn't used for
+`target_type` is one of config.BILLABLE_HOUR_TARGETS' keys
+("Attorney"/"Planner"; legacy "LLP"/"LLC" still accepted, see
+config.TARGET_TYPE_ALIASES) or blank for no target. `start_date` /
+`end_date` are optional (M/D/YYYY) and only needed for someone who
+joined or left during the measuring period -- the target is prorated to
+the part of the period they were employed. Both columns may be missing
+entirely from an older file. `labor_type` is carried over from the
+Employee Cost Rate Details export purely as a hint while filling the
+file in (e.g. every "Contractor" is probably blank) -- it isn't used for
 anything once target_type is set.
 
 If the file doesn't exist yet, generate_starter() creates it from
@@ -32,10 +38,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
+from etl.common import name_key, parse_vp_date
 
 logger = logging.getLogger("somos.etl.employee_targets")
 
-_FIELDNAMES = ["employee_number", "full_name", "labor_type", "target_type"]
+_FIELDNAMES = ["employee_number", "full_name", "labor_type", "target_type", "start_date", "end_date"]
 
 
 def generate_starter(cost_rows: list[dict], path: Path | None = None) -> Path:
@@ -51,12 +58,15 @@ def generate_starter(cost_rows: list[dict], path: Path | None = None) -> Path:
                     "full_name": r["full_name"],
                     "labor_type": r.get("labor_type") or "",
                     "target_type": "",
+                    "start_date": "",
+                    "end_date": "",
                 }
             )
     logger.info(
         "Generated starter reference/employee_targets.csv with %d employees, all target_type "
         "blank -- fill it in (target_type = one of %s, or leave blank for no target) and "
-        "re-run build_warehouse.py.",
+        "re-run build_warehouse.py. Add start_date/end_date only for anyone who joined or "
+        "left mid-period.",
         len(cost_rows),
         list(config.BILLABLE_HOUR_TARGETS.keys()),
     )
@@ -77,24 +87,28 @@ def parse(cost_rows: list[dict] | None = None, path: Path | None = None) -> list
 
     rows = []
     valid_types = set(config.BILLABLE_HOUR_TARGETS.keys())
-    with open(path, newline="", encoding="utf-8") as f:
+    with open(path, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
-            target_type = (row.get("target_type") or "").strip() or None
-            if target_type and target_type not in valid_types:
+            raw_type = (row.get("target_type") or "").strip() or None
+            target_type = config.resolve_role(raw_type)
+            if raw_type and not target_type:
                 logger.warning(
                     "Unknown target_type %r for %s in %s (expected one of %s or blank) -- "
                     "treating as no target.",
-                    target_type,
+                    raw_type,
                     row.get("full_name"),
                     path,
                     sorted(valid_types),
                 )
-                target_type = None
+            full_name = (row.get("full_name") or "").strip()
             rows.append(
                 {
                     "employee_number": (row.get("employee_number") or "").strip(),
-                    "full_name": (row.get("full_name") or "").strip(),
+                    "full_name": full_name,
+                    "name_key": name_key(full_name),
                     "target_type": target_type,
+                    "start_date": parse_vp_date(row.get("start_date")),
+                    "end_date": parse_vp_date(row.get("end_date")),
                 }
             )
     n_assigned = sum(1 for r in rows if r["target_type"])

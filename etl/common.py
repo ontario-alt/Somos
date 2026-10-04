@@ -65,6 +65,27 @@ def parse_bool_checkbox(raw: str | None) -> bool:
     return (raw or "").strip().lower() == "checked"
 
 
+_NICKNAME_RE = re.compile(r"[\"\u201c\u201d][^\"\u201c\u201d]*[\"\u201c\u201d]|\([^)]*\)")
+_NAME_PUNCT_RE = re.compile(r"[^a-z0-9 ]")
+
+
+def name_key(raw: str | None) -> str | None:
+    """Format-independent join key for a person's name, so the same
+    timekeeper matches across exports that spell names differently:
+    "Fraijo Jr., Alfred" / "Alfred Fraijo Jr." / 'Jang, Younsook "Audrey"'
+    / 'Younsook "Audrey" Jang' all collapse to the same key. Quoted or
+    parenthesized nicknames are dropped, "Last, First" is flipped, and
+    the remaining tokens are lowercased and sorted."""
+    if raw is None:
+        return None
+    s = _NICKNAME_RE.sub(" ", str(raw)).strip()
+    if "," in s:
+        last, _, first = s.partition(",")
+        s = f"{first} {last}"
+    tokens = _NAME_PUNCT_RE.sub(" ", s.lower()).split()
+    return " ".join(sorted(tokens)) or None
+
+
 def find_all_files(directory: Path, pattern: str | list[str]) -> list[Path]:
     """All files in `directory` matching one or more glob patterns
     (a source may show up as .csv or .xlsx depending on how it was

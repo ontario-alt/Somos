@@ -91,6 +91,13 @@ SOURCE_FILE_PATTERNS = {
     # and from cash receipts -- see etl/parse_ar_summary.py).
     "ar_summary": ["*AR*Summary*.csv", "*AR*Summary*.xlsx"],
     "employee_cost": ["*Employee*Cost*Rate*.xlsx"],
+    # Transaction-level labor (time) detail for the measuring period --
+    # one row per time entry: employee, date, project/matter, labor
+    # code, hours, billing status, and billing/cost extensions. Powers
+    # the Measuring Period page's creditable-hours scorecard (billable +
+    # capped pro bono), monthly pace, and timekeeper / practice-group
+    # profitability. See etl/parse_labor_detail.py.
+    "labor_detail": ["*Labor*Detail*.csv", "*Labor*Detail*.xlsx", "*Time*Analysis*.csv", "*Time*Analysis*.xlsx"],
     "nte_tracking": ["*NTE*Tracking*.xlsx"],
 }
 
@@ -192,37 +199,95 @@ AGING_BUCKETS = ["current_0_30", "days_31_60", "days_61_90", "days_91_120", "ove
 AGING_FLAG_THRESHOLDS = (90, 120)  # days -- weekly page flags new items crossing these
 
 # ---------------------------------------------------------------------------
-# Billable hour targets, for real utilization (actual billable hours vs.
-# what's expected of that timekeeper) instead of raw activity. Update
-# these two numbers once -- everywhere utilization is shown recalculates.
+# Measuring-period hour targets (firm policy). The measuring period is
+# the fiscal year above (Oct 1 - Sep 30). Each hours-required timekeeper
+# has a role -- attorney or planner -- and an annual creditable-hour
+# target for that role. Update the numbers here once; every page that
+# shows targets recalculates.
 #
-# BILLABLE_HOUR_CREDIT is a flat number of hours credited toward the
-# target regardless of what's actually billed (e.g. CLE, firm
-# administration) -- current assumption is that it *reduces* how many
-# hours a timekeeper actually needs to bill (target - credit), not that
-# it's added on top. Confirm this against the firm's actual hours policy
-# once it's available and adjust EMPLOYEE_TARGETS_CREDIT_REDUCES_TARGET
-# below if the policy works the other way.
+# Creditable hours = billable hours + pro bono hours, with pro bono
+# capped at PRO_BONO_CREDIT_CAP per person per measuring period (hours
+# above the cap are still reported, just not credited).
+#
+# Targets are prorated for leave and for partial-year employment:
+#   prorated target = annual target x available workdays / FY workdays
+# where available workdays = Mon-Fri days inside the person's
+# employment window (start_date/end_date in employee_targets.csv), less
+# approved leave from reference/leave.csv (weighted by percent_away, so
+# a 50% reduced schedule counts as half a day away). Ordinary PTO and
+# firm holidays do NOT reduce the target -- the annual number already
+# assumes them.
 # ---------------------------------------------------------------------------
 BILLABLE_HOUR_TARGETS = {
-    "LLC": 1600,
-    "LLP": 1900,
+    "Attorney": 1900,
+    "Planner": 1600,
 }
-BILLABLE_HOUR_CREDIT = 75
-EMPLOYEE_TARGETS_CREDIT_REDUCES_TARGET = True
+# Earlier versions of reference/employee_targets.csv used the entity
+# abbreviation as the target type (LLP = law group = attorneys, LLC =
+# planning = planners). Still accepted so an existing file keeps working.
+TARGET_TYPE_ALIASES = {
+    "LLP": "Attorney",
+    "LLC": "Planner",
+}
+PRO_BONO_CREDIT_CAP = 75
+# Whether the 75-hour cap itself shrinks for someone on leave (e.g. a
+# half-year leave -> 37.5 creditable pro bono hours). Policy says targets
+# are prorated; it's silent on the cap, so it's left whole by default.
+PRO_BONO_CAP_PRORATED = False
+
+# How pro bono time is recognized in the labor detail export: a matter
+# code listed here, or a matter name / labor code matching the pattern.
+# Add the firm's pro bono project numbers here if they aren't named
+# "Pro Bono ..." in Vantagepoint.
+PRO_BONO_MATTER_CODES: list[str] = []
+PRO_BONO_NAME_PATTERN = r"pro[\s\-]*bono"
+
+# Vantagepoint billing status codes that count as billable hours worked.
+# B = billable, H = held, F = final billed, T = transferred. Written-off
+# time (W/X) is excluded by default -- move them in here if the firm
+# credits written-off hours toward the target.
+LABOR_BILLABLE_STATUS_CODES = {"B", "H", "F", "T"}
+
+# Pace status bands on creditable hours vs. expected-to-date (the
+# prorated target scaled to how much of the person's available time has
+# elapsed): >= first value is On Track, >= second is Watch, else Behind.
+PACE_STATUS_THRESHOLDS = (0.95, 0.85)
+
+# Hand-maintained reference files (employee_targets.csv, leave.csv) --
+# override the folder with SOMOS_REFERENCE_DIR, e.g. to keep them in the
+# same SharePoint folder as the exports.
+REFERENCE_DIR = Path(
+    os.environ.get("SOMOS_REFERENCE_DIR", Path(__file__).parent / "reference")
+).expanduser()
+LEAVE_PATH = REFERENCE_DIR / "leave.csv"
+
+
+def resolve_role(target_type: str | None) -> str | None:
+    """Normalize an employee_targets.csv target_type ("Attorney",
+    "planner", legacy "LLP", ...) to a BILLABLE_HOUR_TARGETS key, or None."""
+    if not target_type:
+        return None
+    t = str(target_type).strip()
+    t = TARGET_TYPE_ALIASES.get(t.upper(), t)
+    for role in BILLABLE_HOUR_TARGETS:
+        if role.lower() == t.lower():
+            return role
+    return None
+
 
 # Not every employee has a billable-hour target (executives, admin team
 # members, consultants/contractors typically don't). Rather than
 # guessing who's exempt, reference/employee_targets.csv is a plain,
 # hand-maintained file -- one row per employee, a `target_type` column
-# that's one of BILLABLE_HOUR_TARGETS' keys ("LLC"/"LLP") or blank for
-# no target. (Not "config/" -- that would collide with this file,
+# that's one of BILLABLE_HOUR_TARGETS' keys ("Attorney"/"Planner") or
+# blank for no target, plus optional start_date/end_date for anyone who
+# joined or left mid-period. (Not "config/" -- that would collide with this file,
 # config.py, as a package name.) etl/parse_employee_targets.py
 # auto-generates a starter version (every employee currently in
 # employee_cost_rates, target_type blank) the first time it's needed if
 # the file doesn't exist yet -- fill it in and re-run
 # build_warehouse.py; it won't be overwritten once it exists.
-EMPLOYEE_TARGETS_PATH = Path(__file__).parent / "reference" / "employee_targets.csv"
+EMPLOYEE_TARGETS_PATH = REFERENCE_DIR / "employee_targets.csv"
 
 # ---------------------------------------------------------------------------
 # Targets (fill in as the firm sets them; used by the Measuring Period page)
