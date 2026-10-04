@@ -208,13 +208,13 @@ AGING_FLAG_THRESHOLDS = (90, 120)  # days -- weekly page flags new items crossin
 # year above (Oct 1 - Sep 30). Update the numbers here once; every page
 # recalculates.
 #
-# Hour categories (classified per time entry -- see classify_project()):
+# Hour categories (classified per time entry -- see classify_time()):
 #   client     client-chargeable hours                         all count
-#   foa        Firm's Own Account (282023)                     all count
+#   foa        Firm's Own Account                              all count
 #   pro_bono   approved Indigent / Non-Indigent Pro Bono       all count
 #   creditable Creditable Non-Billable (recruiting, CLE, ...)  capped at 75
 #   other      other non-billable (meetings, admin, B&C, ...)  don't count
-#   time_off   PTO / sick / holiday                            don't count
+#   time_off   PTO / sick / holiday                     never count (firm rule)
 #
 # Three tests per person, each with its own annual requirement:
 #   Hours Expectation  client + FOA + pro bono + capped creditable
@@ -222,7 +222,7 @@ AGING_FLAG_THRESHOLDS = (90, 120)  # days -- weekly page flags new items crossin
 #                      Project Specialists. Drives promotion; promotion
 #                      in exceptional years needs a 2-year average >= 90%.
 #   Total Activity     all chargeable + non-chargeable (creditable and
-#                      not) >= 2200 / 1800.
+#                      not), excluding PTO/sick/holiday, >= 2200 / 1800.
 #   Bonus Threshold    client + FOA + capped creditable (pro bono NOT
 #                      included) >= 1850 / 1550 to be eligible for an
 #                      hours bonus; once met, pro bono is added back.
@@ -252,12 +252,6 @@ CREDITABLE_NB_CAP = 75
 CREDITABLE_CAP_PRORATED = True
 PROMOTION_LOOKBACK_PCT = 90        # 2-year average % of Hours Expectation
 
-# Whether PTO / sick / holiday time counts toward Total Activity. The
-# policy lists PTO and Sick among the non-billable activities that
-# "do not count toward hours-based bonuses" but doesn't say whether they
-# count toward the 2200/1800 total -- excluded until confirmed.
-TOTAL_INCLUDES_TIME_OFF = False
-
 # Individual terms (e.g. an offer letter with a 1,500 / 1,600 guideline
 # and no creditable allowance) go in employee_targets.csv's optional
 # billable_target / credit_cap / total_target / bonus_threshold columns,
@@ -273,64 +267,64 @@ TARGET_TYPE_ALIASES = {
     "PROJECT SPECIALIST": "Planner",
 }
 
-# Non-billable time files, by the two-digit prefix of their Vantagepoint
-# project number. The policy cites them with a year suffix (e.g. 382023
-# = Recruiting, 2023 file); any year matches (382024, 382025, ...).
-FOA_PROJECT_PREFIXES = {"28": "Firm's Own Account"}
-CREDITABLE_PROJECT_PREFIXES = {
-    "38": "Recruiting",
-    "31": "PGL/Team Work",
-    "50": "Mandatory CLE",
-    "29": "Client Development",
-    "49": "Internal Education",
-    "30": "Career Development",
-    "51": "Non-Legal Pro Bono",
-    "52": "Diversity & Inclusion",
-    "53": "Innovation",
+# How each time entry is put in a policy category (classify_time()).
+# The billing system's project/file numbers have changed since the
+# policy was written, so classification goes by project name and labor
+# code, in this order:
+#   1. TIME_CATEGORY_OVERRIDES -- exact project number (or project name)
+#      -> category. Use this once you see the new system's codes; it
+#      always wins.
+#   2. Approved pro bono (name matches PRO_BONO_NAME_PATTERN, but not
+#      "non-legal pro bono", which the policy lists as creditable).
+#   3. Client time: billing status in LABOR_BILLABLE_STATUS_CODES.
+#   4. Non-billable time by keyword (TIME_CATEGORY_KEYWORDS, checked in
+#      order: time off, FOA, creditable, other).
+#   5. Anything left is "other" non-billable (counts toward Total
+#      Activity only). The page's Data checks list the non-billable
+#      projects that fell through to "other", so the keywords or
+#      overrides can be tuned.
+TIME_CATEGORY_OVERRIDES: dict[str, str] = {
+    # "NB-RECRUIT": "creditable",
+    # "Firm Litigation - Fee Collection": "foa",
 }
-OTHER_NB_PROJECT_PREFIXES = {
-    "78": "Public/Alumni Activities / Sick",
-    "45": "Billings and Collections",
-    "32": "Practice Group/Firm Meetings",
-    "56": "Firm Committee/Practice Group Administration",
-    "33": "Other Office Time",
-}
-TIME_OFF_PROJECT_PREFIXES = {"37": "Paid Time Off"}
-
-# Approved pro bono matters: listed project numbers, or a project name /
-# labor code matching the pattern ("Indigent Pro Bono", "Non-Indigent
-# Pro Bono", ...). "Non-Legal Pro Bono" (51xxxx) is creditable, not pro
-# bono -- project-number classification runs first, so it's never
-# caught by this pattern.
-PRO_BONO_MATTER_CODES: list[str] = []
 PRO_BONO_NAME_PATTERN = r"pro[\s\-]*bono"
-TIME_OFF_PATTERN = r"\b(pto|holiday|vacation|sick|bereavement|jury duty|paid time off)\b"
+TIME_CATEGORY_KEYWORDS = {
+    # PTO, sick and holidays never count toward any requirement.
+    "time_off": r"\b(pto|paid time off|time off|holiday|vacation|sick|bereavement|jury duty|leave of absence)\b",
+    "foa": r"firm'?s own account|\bfoa\b",
+    "creditable": (
+        r"recruit|interview|summer associate|\bpgl\b|practice group lead|team work|industry team|"
+        r"\bcle\b|\bmcle\b|continuing legal education|client development|business development|"
+        r"internal education|training|career development|mentor|professional development|"
+        r"non[\s\-]*legal pro[\s\-]*bono|bar activit|judicial committee|diversity|inclusion|\bd&i\b|"
+        r"\bdei\b|innovation"
+    ),
+    "other": (
+        r"public|alumni|billing|collection|meeting|committee|administration|admin|other office|"
+        r"marketing|general office|overhead"
+    ),
+}
+VALID_TIME_CATEGORIES = {"client", "foa", "pro_bono", "creditable", "other", "time_off"}
 
 
-def classify_project(matter_code: str | None, matter_name: str | None = None,
-                     labor_code: str | None = None) -> str | None:
-    """Policy category for a non-billable time file, or None for a
-    client matter (whose billing status then decides client vs. other)."""
+def classify_time(matter_code: str | None, matter_name: str | None, labor_code: str | None,
+                  is_billable_status: bool) -> str:
+    """Policy category for one time entry -- see the comment above."""
     import re as _re
 
-    code = (matter_code or "").strip()
-    m = _re.fullmatch(r"(\d{2})(?:20)?\d{2}", code)
-    if m:
-        prefix = m.group(1)
-        for cat, table in (("foa", FOA_PROJECT_PREFIXES), ("creditable", CREDITABLE_PROJECT_PREFIXES),
-                           ("time_off", TIME_OFF_PROJECT_PREFIXES), ("other", OTHER_NB_PROJECT_PREFIXES)):
-            if prefix in table:
-                if cat == "other" and _re.search(TIME_OFF_PATTERN, f"{matter_name} {labor_code}", _re.I):
-                    return "time_off"  # 78xxxx is shared by Public/Alumni and Sick
-                return cat
-    if code.upper() in {c.strip().upper() for c in PRO_BONO_MATTER_CODES}:
-        return "pro_bono"
+    for key in (matter_code, matter_name):
+        cat = TIME_CATEGORY_OVERRIDES.get((key or "").strip())
+        if cat in VALID_TIME_CATEGORIES:
+            return cat
     text = f"{matter_name or ''} {labor_code or ''}"
     if _re.search(PRO_BONO_NAME_PATTERN, text, _re.I) and not _re.search(r"non[\s\-]*legal", text, _re.I):
         return "pro_bono"
-    if _re.search(TIME_OFF_PATTERN, text, _re.I):
-        return "time_off"
-    return None
+    if is_billable_status:
+        return "client"
+    for cat in ("time_off", "foa", "creditable", "other"):
+        if _re.search(TIME_CATEGORY_KEYWORDS[cat], text, _re.I):
+            return cat
+    return "other"
 
 
 # Vantagepoint billing status codes that count as billable hours worked.

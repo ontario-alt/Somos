@@ -135,8 +135,8 @@ HOURS_COLS = ["client_hours", "foa_hours", "pro_bono_hours", "creditable_hours",
 
 
 def _total_activity(h: dict) -> float:
-    total = h["client_hours"] + h["foa_hours"] + h["pro_bono_hours"] + h["creditable_hours"] + h["other_hours"]
-    return total + (h["time_off_hours"] if config.TOTAL_INCLUDES_TIME_OFF else 0.0)
+    # PTO / sick / holiday never count (firm rule).
+    return h["client_hours"] + h["foa_hours"] + h["pro_bono_hours"] + h["creditable_hours"] + h["other_hours"]
 
 
 def build_scorecard(

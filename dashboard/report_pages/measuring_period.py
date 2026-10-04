@@ -344,7 +344,7 @@ def _section_timekeeper_hours(fy_start: datetime.date, fy_end: datetime.date, as
         f"Total Activity / Bonus Threshold: {reqs}, plus individual terms where set. **Credited hours** = "
         f"client + Firm's Own Account + pro bono + creditable non-billable (capped at "
         f"{config.CREDITABLE_NB_CAP} hrs). **Total activity** = all chargeable + non-chargeable hours"
-        f"{'' if config.TOTAL_INCLUDES_TIME_OFF else ', excluding PTO/sick/holiday'}. **Bonus hours** = "
+        f", excluding PTO/sick/holiday (which never count). **Bonus hours** = "
         f"client + FOA + capped creditable (no pro bono). Requirements and the creditable cap are prorated "
         f"on workdays for approved leave and mid-period start/end dates. {elapsed_wd} of {period_wd} "
         f"workdays elapsed ({elapsed_wd / period_wd * 100:.0f}%). Status is the worse of Hours "
@@ -502,6 +502,50 @@ def _section_timekeeper_hours(fy_start: datetime.date, fy_end: datetime.date, as
         _person_drilldown(tracked, view, leave, fy_start, fy_end, as_of, source)
 
     _hours_data_quality(sc_all, hours, people, leave, source, fy_start, as_of)
+    if source == "labor_detail":
+        _classification_review(fy_start, as_of)
+
+
+_CATEGORY_LABELS = {
+    "foa": "Firm's Own Account (counts)", "pro_bono": "Pro bono (counts in full)",
+    "creditable": "Creditable non-billable (capped)", "other": "Other non-billable (Total Activity only)",
+    "time_off": "PTO / sick / holiday (never counts)",
+}
+
+
+def _classification_review(fy_start, as_of):
+    """Every non-client project and how it was categorized, so the keyword
+    rules (config.TIME_CATEGORY_KEYWORDS) can be checked against the new
+    billing system's project names and corrected with
+    config.TIME_CATEGORY_OVERRIDES."""
+    df = query(
+        """
+        SELECT hours_category, matter_code, matter_name, labor_code,
+               COUNT(DISTINCT name_key) AS timekeepers, SUM(hours) AS hours
+        FROM labor_detail
+        WHERE transaction_date BETWEEN ? AND ? AND hours_category <> 'client'
+        GROUP BY ALL ORDER BY hours_category, hours DESC
+        """,
+        [fy_start, as_of],
+    )
+    if df.empty:
+        return
+    n_other = int((df["hours_category"] == "other").sum())
+    with st.expander(f"How non-billable time was classified ({len(df)} projects)", expanded=False):
+        st.caption(
+            "Categories come from project name / labor code keywords (the policy's old file numbers no "
+            "longer apply). If a project is in the wrong bucket, add its project number to "
+            "`TIME_CATEGORY_OVERRIDES` in config.py and refresh."
+            + (f" {n_other} project(s) are in *Other* (including non-billable or written-off time on "
+               f"client matters) -- check these first." if n_other else "")
+        )
+        st.dataframe(
+            df.assign(hours_category=df["hours_category"].map(_CATEGORY_LABELS).fillna(df["hours_category"])).rename(
+                columns={"hours_category": "Category", "matter_code": "Project #", "matter_name": "Project Name",
+                         "labor_code": "Labor Code", "timekeepers": "Timekeepers", "hours": "Hours"}),
+            use_container_width=True, hide_index=True,
+            column_config={"Hours": st.column_config.NumberColumn(format="%,.1f")},
+        )
 
 
 def _add_promotion_lookback(sc: pd.DataFrame, fy_start) -> pd.DataFrame:

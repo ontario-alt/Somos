@@ -30,13 +30,12 @@ flattens fine as long as each detail row carries its own employee and
 date.
 
 Each row gets an `hours_category` per the firm's Promotion and Bonus
-Policy (config.classify_project): foa / creditable / other / time_off
-for the firm's non-billable time files (by project-number prefix, e.g.
-38xxxx = Recruiting), pro_bono for approved pro bono matters, and for
-client matters "client" when the billing status is in
-config.LABOR_BILLABLE_STATUS_CODES, else "other". With no billing status
-column at all, every client-matter row counts as client time and a
-warning is logged.
+Policy (config.classify_time): client / foa / pro_bono / creditable /
+other / time_off, decided by project name and labor code keywords plus
+any exact overrides in config.TIME_CATEGORY_OVERRIDES (the policy's old
+file numbers no longer apply). With no billing status column at all,
+every row not otherwise classified counts as client time and a warning
+is logged.
 
 Output grain: one row per time entry:
     entity, employee_number, employee_name, name_key, transaction_date,
@@ -200,9 +199,7 @@ def _parse_one(path: Path) -> list[dict]:
         matter_name = _cell_str(get(raw, "matter_name"))
         labor_code = _cell_str(get(raw, "labor_code"))
         status = _cell_str(get(raw, "billing_status")) or None
-        category = config.classify_project(matter_code, matter_name, labor_code)
-        if category is None:
-            category = "client" if _is_billable(status, has_status) else "other"
+        category = config.classify_time(matter_code, matter_name, labor_code, _is_billable(status, has_status))
         rows.append(
             {
                 "entity": _cell_str(get(raw, "entity")) or None,

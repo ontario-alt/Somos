@@ -26,17 +26,24 @@ Period page scores every hours-required timekeeper against the firm's
 live in `config.py`.
 
 **Hour categories.** Every labor-detail entry is classified by
-`config.classify_project()`, using the project-number prefix the policy
-cites (any year suffix works, so 382023, 382024 and so on all match):
+`config.classify_time()` using its project name and labor code. The
+policy's old file numbers no longer apply since the billing system
+changed.
 
-| Category | Files | Counts toward |
+| Category | Recognized by | Counts toward |
 |---|---|---|
-| Client | client matters with a billable status | everything |
-| Firm's Own Account | 28xxxx | everything |
-| Pro bono | approved Indigent / Non-Indigent Pro Bono | Hours Expectation in full; bonus only after the threshold is met |
-| Creditable non-billable | 38 Recruiting, 31 PGL/Team, 50 CLE, 29 Client Dev, 49 Internal Ed, 30 Career Dev, 51 Non-Legal Pro Bono, 52 D&I, 53 Innovation | capped at **75 hrs** (cap prorated) |
-| Other non-billable | 78 Public/Alumni, 45 B&C, 32 Meetings, 56 Committee Admin, 33 Other Office | Total Activity only |
-| Time off | 37 PTO, Sick, holidays | nothing (`TOTAL_INCLUDES_TIME_OFF`) |
+| Client | billable status | everything |
+| Firm's Own Account | "Firm's Own Account" / "FOA" | everything |
+| Pro bono | "pro bono" (not "non-legal pro bono") | Hours Expectation in full; bonus only after the threshold is met |
+| Creditable non-billable | recruiting, PGL/team work, CLE, client/business development, internal education/training, career development/mentoring, non-legal pro bono/bar activities, diversity & inclusion, innovation | capped at **75 hrs** (cap prorated) |
+| Other non-billable | meetings, billing & collections, administration, public/alumni, anything unrecognized | Total Activity only |
+| PTO / sick / holiday | PTO, paid time off, sick, holiday, vacation, ... | **never counts** |
+
+The keywords are in `config.TIME_CATEGORY_KEYWORDS`. Once you see the new
+system's project numbers, pin any project to a category in
+`config.TIME_CATEGORY_OVERRIDES`; overrides always win. The page's **How
+non-billable time was classified** panel lists every non-client project with
+its category and hours, so you can check it.
 
 **Three tests per person.** Associates are the Attorney role. Planners and
 Project Specialists are the Planner role.
@@ -44,7 +51,7 @@ Project Specialists are the Planner role.
 | Test | Hours | Associates / Planners |
 |---|---|---|
 | Hours Expectation (promotion) | client + FOA + pro bono + capped creditable | 1,900 / 1,600 |
-| Total Activity | all chargeable + non-chargeable | 2,200 / 1,800 |
+| Total Activity | all chargeable + non-chargeable, excluding PTO/sick/holiday | 2,200 / 1,800 |
 | Bonus Threshold | client + FOA + capped creditable (no pro bono) | 1,850 / 1,550 |
 | Promotion lookback | 2-year average % of Hours Expectation | ≥ 90% |
 
@@ -71,8 +78,9 @@ from the firm's workbook.
    Hours, Billing Extension, Billed Amount, Cost Extension and Company
    (matched loosely, see `_ALIASES` in `etl/parse_labor_detail.py`). This is
    the only source that separates pro bono, FOA and creditable time, so use it
-   going forward. **Not yet verified against a real export.** Check the build
-   log's "Hours by policy category" line against Vantagepoint the first time.
+   going forward. **Not yet verified against a real export.** The first time,
+   check the build log's "Hours by policy category" line and the
+   classification panel against Vantagepoint.
 2. **The firm's Monthly Hours Report by Timekeeper workbook**
    (`*Monthly*Hours*Report*.xlsx`, `etl/parse_monthly_hours_workbook.py`).
    It has one tab per timekeeper, and each person's totals reconcile to the
