@@ -35,6 +35,11 @@ def _fmt(v, kind: str) -> str:
     return f'<span class="pill {cls}">{s}</span>' if cls else s
 
 
+def table_html(df: pd.DataFrame, cols: list[tuple[str, str]]) -> str:
+    """Public wrapper for callers building extra_html sections."""
+    return _table(df, cols)
+
+
 def _table(df: pd.DataFrame, cols: list[tuple[str, str]], drop_empty: set[str] = frozenset()) -> str:
     # Columns with nothing to say for this period (all zero / blank, e.g.
     # FOA and pro bono in billable-only history) are left out.
@@ -47,7 +52,12 @@ def _table(df: pd.DataFrame, cols: list[tuple[str, str]], drop_empty: set[str] =
     return f"<table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table>"
 
 
-def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, notes: list[str] | None = None) -> str:
+def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, notes: list[str] | None = None,
+               chart_fig=None, chart_title: str = "Credited hours vs. prorated Hours Expectation",
+               extra_html: str = "") -> str:
+    """chart_fig replaces the default progress chart (e.g. the evaluation-
+    window chart); extra_html is inserted between the chart and the
+    scorecard (e.g. a table of timekeepers in the window)."""
     closed = as_of >= fy_end
     n = len(sc)
     has_total = bool(sc["Has Breakdown"].any()) if "Has Breakdown" in sc else True
@@ -68,8 +78,10 @@ def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, not
         kpis.append(("Meet 2-yr promotion test", f"{promo}"))
     kpi_html = "".join(f'<div class="kpi"><div class="v">{v}</div><div class="l">{html.escape(l)}</div></div>' for l, v in kpis)
 
-    expected_pct = sc["Expected to Date"] / sc["Expectation"].where(sc["Expectation"] > 0) * 100
-    chart = target_progress(sc, expected_pct).to_html(full_html=False, include_plotlyjs=True, config={"displayModeBar": False})
+    if chart_fig is None:
+        expected_pct = sc["Expected to Date"] / sc["Expectation"].where(sc["Expectation"] > 0) * 100
+        chart_fig = target_progress(sc, expected_pct)
+    chart = chart_fig.to_html(full_html=False, include_plotlyjs=True, config={"displayModeBar": False})
 
     sections = []
     for role in [*config.BILLABLE_HOUR_TARGETS, "Custom"]:
@@ -127,8 +139,9 @@ td.txt, th:first-child {{ text-align: left; }}
 <h1>Measuring Period Hours — {fy_start:%b %-d, %Y} to {fy_end:%b %-d, %Y}</h1>
 <div class="sub">Hours through {as_of:%b %-d, %Y}{' (period closed)' if closed else ''} · generated {datetime.date.today():%b %-d, %Y}</div>
 <div class="kpis">{kpi_html}</div>
-<h2>Credited hours vs. prorated Hours Expectation</h2>
+<h2>{html.escape(chart_title)}</h2>
 {chart}
+{extra_html}
 <h2>Scorecard</h2>
 <div class="scroll">{''.join(sections)}</div>
 <h2>Method</h2>

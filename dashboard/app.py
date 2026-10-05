@@ -16,7 +16,7 @@ import streamlit as st
 
 import config
 from dashboard.data import warehouse_last_built
-from dashboard.report_pages import measuring_period, monthly, quarterly, weekly
+from dashboard.report_pages import measuring_period, monthly, period_review, quarterly, weekly
 
 st.set_page_config(page_title="Somos Group Executive Dashboard", layout="wide", page_icon="\U0001f4ca")
 
@@ -32,8 +32,10 @@ with st.sidebar:
 
     if st.button("\U0001f504 Refresh data", use_container_width=True, help="Re-run the ETL against whatever's newest in data/raw/"):
         with st.spinner("Rebuilding warehouse from data/raw/..."):
+            from dashboard.data import release_connection
             from etl.build_warehouse import build
 
+            release_connection()
             build()
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -45,11 +47,12 @@ with st.sidebar:
     st.divider()
     page_name = st.radio(
         "Report",
-        ["Monthly", "Weekly", "Quarterly", "Measuring Period"],
+        ["Period Review", "Monthly", "Weekly", "Quarterly", "Measuring Period"],
         label_visibility="collapsed",
     )
 
 pages = {
+    "Period Review": period_review.render,
     "Monthly": monthly.render,
     "Weekly": weekly.render,
     "Quarterly": quarterly.render,

@@ -270,6 +270,18 @@ PROMOTION_LOOKBACK_PCT = 90        # 2-year average % of Hours Expectation
 # further.
 EVALUATION_WINDOW = (90, 100)
 
+# Leave that prorates requirements is recorded in reference/leave.csv.
+# The Period Review page *suggests* leave from the hours data -- time
+# entries whose project / labor code matches this pattern (ordinary PTO,
+# sick and holidays are excluded: they don't prorate), and runs of at
+# least LEAVE_GAP_MIN_WORKDAYS workdays with no hours logged at all -- for
+# someone to confirm. Nothing is prorated until it's confirmed.
+LEAVE_OF_ABSENCE_PATTERN = (
+    r"leave of absence|\bloa\b|fmla|cfra|parental|maternity|paternity|bonding|"
+    r"medical leave|disability|sabbatical|military leave|family leave"
+)
+LEAVE_GAP_MIN_WORKDAYS = 10
+
 # Individual terms (e.g. an offer letter with a 1,500 / 1,600 guideline
 # and no creditable allowance) go in employee_targets.csv's optional
 # billable_target / credit_cap / total_target / bonus_threshold columns,
@@ -339,6 +351,8 @@ def classify_time(matter_code: str | None, matter_name: str | None, labor_code: 
         return "pro_bono"
     if is_billable_status:
         return "client"
+    if _re.search(LEAVE_OF_ABSENCE_PATTERN, text, _re.I):
+        return "time_off"  # leave of absence never counts (it prorates instead)
     for cat in ("time_off", "foa", "creditable", "other"):
         if _re.search(TIME_CATEGORY_KEYWORDS[cat], text, _re.I):
             return cat

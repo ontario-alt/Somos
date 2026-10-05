@@ -28,6 +28,18 @@ def get_connection() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(config.WAREHOUSE_PATH), read_only=True)
 
 
+def release_connection():
+    """Close the cached read-only connection so the ETL can open the
+    warehouse for writing (DuckDB won't mix read-only and read-write
+    connections to the same file in one process). Call before build()."""
+    try:
+        get_connection().close()
+    except Exception:
+        pass
+    st.cache_resource.clear()
+    st.cache_data.clear()
+
+
 def table_exists(table: str) -> bool:
     con = get_connection()
     return con.execute(
