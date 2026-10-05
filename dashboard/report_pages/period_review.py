@@ -404,24 +404,32 @@ def _person_hours(people, hours, fy_start, source) -> pd.DataFrame:
 
 
 def _excluded_people(people, hours, fy_start, source) -> tuple[pd.DataFrame, set]:
-    """(rows to summarize, people to keep off the chart). Rows (person x
-    entity) belong to an excluded group if the person's staff_group is in
-    config.REVIEW_EXCLUDED_STAFF_GROUPS or the hours were billed through
-    config.REVIEW_EXCLUDED_ENTITIES; every such row is summarized. A person
-    leaves the chart only if all of their hours fall in excluded rows."""
+    """(rows to summarize, people to keep off the chart). A row (person x
+    entity) belongs to every excluded group that applies: each of the
+    person's staff_group values (several allowed, separated by ';') listed
+    in config.REVIEW_EXCLUDED_STAFF_GROUPS, plus the group for its entity in
+    config.REVIEW_EXCLUDED_ENTITIES -- so someone who is both Somos MX and
+    Administrative is counted in both summaries. A person leaves the chart
+    only if all of their hours fall in excluded rows."""
     ph = _person_hours(people, hours, fy_start, source)
     groups = people.set_index("name_key")["staff_group"] if "staff_group" in people else pd.Series(dtype=str)
-    def group_for(r):
+
+    def groups_for(r) -> list[str]:
+        out = []
         g = groups.get(r["name_key"]) if r["name_key"] in groups.index else None
-        if isinstance(g, str) and g in config.REVIEW_EXCLUDED_STAFF_GROUPS:
-            return config.REVIEW_EXCLUDED_STAFF_GROUPS[g]
+        for part in re.split(r"[;,]", g) if isinstance(g, str) else []:
+            label = config.REVIEW_EXCLUDED_STAFF_GROUPS.get(part.strip())
+            if label and label not in out:
+                out.append(label)
         for ent, label in config.REVIEW_EXCLUDED_ENTITIES.items():
-            if ent in str(r["entity"] or ""):
-                return label
-        return None
-    ph["group"] = ph.apply(group_for, axis=1)
-    all_excluded = ph.groupby("name_key")["group"].apply(lambda g: g.notna().all())
-    return ph[ph["group"].notna()], set(all_excluded[all_excluded].index)
+            if ent in str(r["entity"] or "") and label not in out:
+                out.append(label)
+        return out
+
+    ph["groups"] = ph.apply(groups_for, axis=1)
+    all_excluded = ph.groupby("name_key")["groups"].apply(lambda g: all(len(x) > 0 for x in g))
+    ex = ph[ph["groups"].map(len) > 0].explode("groups").rename(columns={"groups": "group"})
+    return ex.drop_duplicates(subset=["name_key", "entity", "group"]), set(all_excluded[all_excluded].index)
 
 
 def _excluded_summary(ex: pd.DataFrame):
@@ -436,10 +444,17 @@ def _excluded_summary(ex: pd.DataFrame):
     agg["billable_pct"] = agg["billable"] / agg["activity"].where(agg["activity"] > 0) * 100
     labels = " and ".join(agg["group"])
     with st.expander(f"Excluded from the chart — {labels} (aggregate review)", expanded=False):
+        both = ex.groupby("name_key")["group"].nunique()
+        both_names = sorted(ex[ex["name_key"].isin(both[both > 1].index)]["employee_name"].unique())
+        overlap = ""
+        if both_names:
+            one = len(both_names) == 1
+            overlap = (f" {', '.join(both_names)} {'belongs' if one else 'belong'} to more than one group and "
+                       f"{'is' if one else 'are'} counted in each, so the group totals overlap.")
         st.caption(
             "These staff have no hourly requirement and are kept off the chart above, but their hours are "
             "summarized here for review. Activity = billable + credited + other non-billable (PTO and "
-            "holidays shown separately)."
+            "holidays shown separately)." + overlap
         )
         h = st.column_config.NumberColumn(format="%,.1f")
         st.dataframe(
