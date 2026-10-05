@@ -185,6 +185,15 @@ FISCAL_YEAR_START_MONTH = 10  # October
 FISCAL_YEAR_START_DAY = 1
 
 
+def today():
+    """Today's date -- or SOMOS_TODAY (YYYY-MM-DD) if set, so the Current
+    Period page can be previewed or demoed as of another date."""
+    import datetime
+
+    override = os.environ.get("SOMOS_TODAY")
+    return datetime.date.fromisoformat(override) if override else datetime.date.today()
+
+
 def fiscal_year_bounds(as_of) -> tuple:
     """(start, end) dates of the fiscal year containing `as_of`, per
     FISCAL_YEAR_START_MONTH/DAY above. Used by the Measuring Period page."""
@@ -255,6 +264,11 @@ BONUS_HOUR_THRESHOLDS = {          # Bonus Threshold
 CREDITABLE_NB_CAP = 75
 CREDITABLE_CAP_PRORATED = True
 PROMOTION_LOOKBACK_PCT = 90        # 2-year average % of Hours Expectation
+# The band the Current Period page marks out on its hours chart and lists
+# separately (% of the prorated Hours Expectation, as pace to date or as a
+# share of the full-year requirement) -- timekeepers here may be evaluated
+# further.
+EVALUATION_WINDOW = (90, 100)
 
 # Individual terms (e.g. an offer letter with a 1,500 / 1,600 guideline
 # and no creditable allowance) go in employee_targets.csv's optional
