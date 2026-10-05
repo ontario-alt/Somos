@@ -39,6 +39,7 @@ import pandas as pd
 import config
 from etl import (
     parse_ap,
+    parse_billing_hours_analysis,
     parse_ar,
     parse_ar_aging_workbook,
     parse_ar_detail,
@@ -68,7 +69,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 _TEXT_COLUMNS = {
     "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
     "client_name_confidence", "target_type", "employee_number", "name_key", "matter_name",
-    "labor_code", "billing_status", "leave_type", "note", "sheet", "hours_category",
+    "labor_code", "billing_status", "leave_type", "note", "sheet", "hours_category", "role_hint",
 }
 # Optional date columns that are often entirely blank (nobody joined or
 # left mid-period, no open-ended leave) -- an all-None column would
@@ -266,8 +267,20 @@ def build(snapshot_date: date | None = None) -> Path:
     _create_table(con, "labor_detail", labor_rows, snapshot_date, snapshot_date_col="transaction_date")
 
     # --- Firm's monthly hours workbook (closed measuring periods) ----------
+    # The Billing Hours Analysis workbook's billable-only monthly tabs only
+    # fill months the Monthly Hours Report doesn't cover (that one has the
+    # full billable / credited / not-credited breakdown). Combined into one
+    # batch because the table upserts by month.
     monthly_hours_rows = parse_monthly_hours_workbook.parse()
+    covered_months = {r["month"] for r in monthly_hours_rows}
+    monthly_hours_rows += [
+        r for r in parse_billing_hours_analysis.parse() if r["month"] not in covered_months
+    ]
     parse_monthly_hours_workbook.write_processed(monthly_hours_rows)
+    # Both workbooks are re-read in full every run, so the table is rebuilt
+    # rather than upserted (also keeps its schema current).
+    if monthly_hours_rows:
+        con.execute("DROP TABLE IF EXISTS monthly_hours")
     _create_table(con, "monthly_hours", monthly_hours_rows, snapshot_date, snapshot_date_col="month")
 
     # --- Approved leave (hand-maintained, prorates hour targets) ---------

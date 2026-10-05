@@ -65,7 +65,12 @@ def parse_bool_checkbox(raw: str | None) -> bool:
     return (raw or "").strip().lower() == "checked"
 
 
-_NICKNAME_RE = re.compile(r"[\"\u201c\u201d][^\"\u201c\u201d]*[\"\u201c\u201d]|\([^)]*\)")
+_NICKNAME_RE = re.compile(
+    r"[\"\u201c\u201d][^\"\u201c\u201d]*[\"\u201c\u201d]"  # "Audrey"
+    r"|(?<!\w)['\u2018\u2019][^'\u2018\u2019]+['\u2018\u2019](?!\w)"  # 'Audrey' (not O'Brien)
+    r"|\([^)]*\)"  # (Audrey)
+    r"|\[[^\]]*\]"  # [Contractor], [Owner] -- role tags some reports append
+)
 _NAME_PUNCT_RE = re.compile(r"[^a-z0-9 ]")
 
 
@@ -83,7 +88,46 @@ def name_key(raw: str | None) -> str | None:
         last, _, first = s.partition(",")
         s = f"{first} {last}"
     tokens = _NAME_PUNCT_RE.sub(" ", s.lower()).split()
-    return " ".join(sorted(tokens)) or None
+    key = " ".join(sorted(tokens)) or None
+    return _name_aliases().get(key, key)
+
+
+def _name_aliases() -> dict[str, str]:
+    """reference/name_aliases.csv (alias,full_name): the same person spelled
+    differently across reports ("Ricky Pozos" / "Ricardo Pozos", a full
+    legal name vs. a short one). Maps each alias's key to the canonical
+    name's key. Re-read whenever the file changes."""
+    import csv as _csv
+
+    import config
+
+    path = config.REFERENCE_DIR / "name_aliases.csv"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    if _ALIAS_CACHE.get("mtime") != mtime:
+        mapping = {}
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            for row in _csv.DictReader(f):
+                a, c = _raw_key(row.get("alias")), _raw_key(row.get("full_name"))
+                if a and c and a != c:
+                    mapping[a] = c
+        _ALIAS_CACHE.update(mtime=mtime, mapping=mapping)
+    return _ALIAS_CACHE["mapping"]
+
+
+_ALIAS_CACHE: dict = {}
+
+
+def _raw_key(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    s = _NICKNAME_RE.sub(" ", str(raw)).strip()
+    if "," in s:
+        last, _, first = s.partition(",")
+        s = f"{first} {last}"
+    return " ".join(sorted(_NAME_PUNCT_RE.sub(" ", s.lower()).split())) or None
 
 
 def find_all_files(directory: Path, pattern: str | list[str]) -> list[Path]:

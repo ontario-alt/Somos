@@ -89,7 +89,15 @@ from the firm's workbook.
    not-credited buckets, so all credited hours are treated as creditable
    (capped). That understates anyone whose credited hours were pro bono, and
    the page says so.
-3. **All Timekeepers Hours** summary, with the same bucket limitation.
+3. **The firm's Billing Hours Analysis workbook** (`*Billing*Hours*Analysis*.xlsx`,
+   `etl/parse_billing_hours_analysis.py`). Its "FY20xx — Monthly Billable" tabs
+   backfill billable-only history; this is how FY2025 gets loaded for the FY2026
+   2-year promotion lookback. These tabs have billable hours only, so pro bono and
+   creditable time are missing, Total Activity isn't scored, and roles come from
+   the tab's Attorneys / Planners grouping. Months already covered by the Monthly
+   Hours Report are skipped. The YTD summary, cost per hour and profitability
+   tabs are derived figures and aren't loaded.
+4. **All Timekeepers Hours** summary, with the same bucket limitation as (2).
 
 Employee Cost Rate Details and the Matter List feed the profitability views.
 
@@ -114,8 +122,26 @@ Employee Cost Rate Details and the Matter List feed the profitability views.
     full_name,employee_number,leave_start,leave_end,percent_away,leave_type,note
     Lauren Kim,202,1/5/2026,3/27/2026,100,Parental,
 
-Both files are gitignored because they contain real names. Set
+`reference/name_aliases.csv` (`alias,full_name`) links names spelled differently
+across reports, e.g. "Ricky Pozos" and "Ricardo Pozos", or a full legal name
+and a short one. Quoted nicknames ('Audrey') and role tags ([Contractor]) are
+already ignored when matching.
+
+All three files are gitignored because they contain real names. Set
 `SOMOS_REFERENCE_DIR` to keep them in the shared SharePoint folder.
+
+### Profitability settings
+
+Timekeeper Profitability shows two views of each person:
+
+- **Contribution:** revenue less direct labor cost.
+- **Loaded margin:** direct cost × (1 + `LABOR_BURDEN_RATE`), currently 103.4%
+  (fringe 16.4% plus non-labor opex and shared allocations, from the firm's
+  draft analysis).
+
+Alongside these it shows cost per billable hour, break-even hours, and the
+draft's bands: ≤ $150 / ≤ $250 / higher cost per billable hour, and ≥ 30% /
+≥ 10% / lower margin. All of these settings are in `config.py`.
 
 ### Sharing with leadership
 

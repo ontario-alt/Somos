@@ -139,7 +139,7 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
             """
             SELECT name_key, ANY_VALUE(employee_name) AS full_name,
                    MAX(billable_requirement) AS wb_billable, MAX(credit_cap) AS wb_cap,
-                   MAX(total_requirement) AS wb_total
+                   MAX(total_requirement) AS wb_total, MAX(role_hint) AS role_hint
             FROM monthly_hours WHERE month BETWEEN ? AND ?
             GROUP BY name_key
             """,
@@ -155,6 +155,9 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
         # 1,900 -> Attorney, 1,600 -> Planner, anything else = individual terms.
         by_target = {v: k for k, v in config.BILLABLE_HOUR_TARGETS.items()}
         people["role"] = people["role"].fillna(people["billable_target"].map(by_target))
+        # Billable-only history carries the report's own grouping
+        # (Attorneys / Planners) instead of a requirement.
+        people["role"] = people["role"].fillna(people.pop("role_hint"))
     return people
 
 
@@ -199,7 +202,8 @@ _LABOR_CATEGORY_SQL = """
 """
 _WORKBOOK_CATEGORY_SQL = """
     SUM(billable_to_clients) AS client_hours, 0.0 AS foa_hours, 0.0 AS pro_bono_hours,
-    SUM(nb_credited) AS creditable_hours, SUM(nb_not_credited) AS other_hours, 0.0 AS time_off_hours
+    SUM(nb_credited) AS creditable_hours, SUM(nb_not_credited) AS other_hours, 0.0 AS time_off_hours,
+    BOOL_AND(COALESCE(has_breakdown, TRUE)) AS has_breakdown
 """
 
 
@@ -292,7 +296,7 @@ def _scorecard_for(fy_start, fy_end, as_of) -> tuple[pd.DataFrame | None, str, p
 # ---------------------------------------------------------------------------
 _SOURCE_LABELS = {
     "labor_detail": "Vantagepoint labor detail export",
-    "monthly_hours": "the firm's Monthly Hours Report by Timekeeper workbook",
+    "monthly_hours": "the firm's Monthly Hours Report by Timekeeper / Billing Hours Analysis workbooks",
     "timekeeper_hours": "the All Timekeepers Hours summary",
 }
 
@@ -350,7 +354,16 @@ def _section_timekeeper_hours(fy_start: datetime.date, fy_end: datetime.date, as
         f"workdays elapsed ({elapsed_wd / period_wd * 100:.0f}%). Status is the worse of Hours "
         f"Expectation and Total Activity."
     )
-    if source in ("monthly_hours", "timekeeper_hours"):
+    billable_only = "has_breakdown" in hours and not hours["has_breakdown"].fillna(True).all()
+    if billable_only:
+        st.warning(
+            "This period's hours come from the Billing Hours Analysis workbook, which has **billable "
+            "hours only** -- no pro bono, Firm's Own Account or creditable non-billable time. Credited "
+            "hours here are billable hours alone (understating anyone with credited time), and Total "
+            "Activity can't be scored. Roles come from the workbook's Attorneys / Planners grouping.",
+            icon="⚠️",
+        )
+    elif source in ("monthly_hours", "timekeeper_hours"):
         st.warning(
             f"{_SOURCE_LABELS[source].capitalize()} has only billable / credited / not-credited "
             "buckets, so its credited non-billable hours are all treated as *creditable* (capped at "
@@ -416,8 +429,17 @@ def _section_timekeeper_hours(fy_start: datetime.date, fy_end: datetime.date, as
                 sub = sub.assign(_r=sub[sort_col].map(lambda v: status_rank.get(v, 99))).sort_values(["_r", "Timekeeper"])
                 label = {"Attorney": "Associates (attorneys)", "Planner": "Planners & Project Specialists"}.get(role, "Individual terms")
                 st.markdown(f"**{label}**")
-                st.dataframe(sub[cols], use_container_width=True, hide_index=True,
-                             column_config={c: cfg.get(c, h1) for c in cols if c not in ("Timekeeper",) and not c.endswith("Status")})
+                out = sub[cols].copy()
+                # Streamlit renders NaN in a NumberColumn as the text "None";
+                # columns that are legitimately blank for some people (no prior
+                # period, no Total Activity from billable-only history) are
+                # shown as formatted text with a dash instead.
+                text_cols = [c for c in cols if c in _MAYBE_BLANK and out[c].isna().any()]
+                for c in text_cols:
+                    out[c] = out[c].map(lambda v, pct=c.endswith("%"): "—" if pd.isna(v) else (f"{v:.0f}%" if pct else f"{v:,.1f}"))
+                st.dataframe(out, use_container_width=True, hide_index=True,
+                             column_config={c: cfg.get(c, h1) for c in cols
+                                            if c != "Timekeeper" and not c.endswith("Status") and c not in text_cols})
 
     _tables(
         tab_exp,
@@ -548,6 +570,10 @@ def _classification_review(fy_start, as_of):
         )
 
 
+_MAYBE_BLANK = {"Prior Period %", "2-yr Avg %", "Total Hours", "Total Expectation", "Total %",
+                "Bonus Threshold", "Bonus %", "Bonus Credited Hours"}
+
+
 def _add_promotion_lookback(sc: pd.DataFrame, fy_start) -> pd.DataFrame:
     """Prior measuring period's % of Hours Expectation (full period) and the
     two-year average, for policy §1c's promotion lookback."""
@@ -564,7 +590,7 @@ def _add_promotion_lookback(sc: pd.DataFrame, fy_start) -> pd.DataFrame:
                       on="name_key", how="left")
     sc["2-yr Avg %"] = sc[["% of Expectation", "Prior Period %"]].mean(axis=1, skipna=False)
     sc["Promotion Lookback"] = sc["2-yr Avg %"].map(
-        lambda v: "" if pd.isna(v) else ("Meets 90% test" if v >= config.PROMOTION_LOOKBACK_PCT else "Below 90%")
+        lambda v: "No prior period" if pd.isna(v) else ("Meets 90% test" if v >= config.PROMOTION_LOOKBACK_PCT else "Below 90%")
     )
     return sc
 
@@ -746,10 +772,34 @@ def _timekeeper_economics(fy_start, as_of) -> tuple[pd.DataFrame, str, str] | No
     lab["revenue_per_hr"] = lab["revenue"] / lab["billable_hours"].where(lab["billable_hours"] > 0)
     lab["cost_per_hr"] = lab["cost"] / lab["total_hours"].where(lab["total_hours"] > 0)
     lab["pro_bono_cost"] = lab["pro_bono_hours"] * lab["cost_per_hr"]
+    # Fully loaded view (firm burden rate on top of direct labor cost) --
+    # what the firm's own profitability analysis measures.
+    lab["cost_per_billable_hr"] = lab["cost"] / lab["billable_hours"].where(lab["billable_hours"] > 0)
+    lab["loaded_cost"] = lab["cost"] * (1 + config.LABOR_BURDEN_RATE)
+    lab["loaded_cost_per_billable_hr"] = lab["loaded_cost"] / lab["billable_hours"].where(lab["billable_hours"] > 0)
+    lab["loaded_margin"] = lab["revenue"] - lab["loaded_cost"]
+    lab["loaded_margin_pct"] = lab["loaded_margin"] / lab["revenue"].where(lab["revenue"] != 0) * 100
+    lab["breakeven_hours"] = lab["loaded_cost"] / lab["revenue_per_hr"]
+    lab["cost_band"] = lab["cost_per_billable_hr"].map(_cost_band)
+    lab["margin_band"] = lab["loaded_margin_pct"].map(_margin_band)
     lab["role"] = lab["role"].fillna("No target")
     if use_billed:
         lab["realization_pct"] = lab["billed_amount"] / lab["standard_value"].where(lab["standard_value"] > 0) * 100
     return lab, revenue_basis, cost_basis
+
+
+def _cost_band(v) -> str:
+    if pd.isna(v):
+        return ""
+    lo, hi = config.COST_PER_BILLABLE_HOUR_BANDS
+    return "Efficient" if v <= lo else "Moderate" if v <= hi else "High"
+
+
+def _margin_band(v) -> str:
+    if pd.isna(v):
+        return ""
+    healthy, marginal = config.MARGIN_BANDS
+    return "Healthy" if v >= healthy else "Marginal" if v >= marginal else "Unprofitable"
 
 
 def _section_timekeeper_profitability(fy_start, fy_end, as_of):
@@ -766,14 +816,23 @@ def _section_timekeeper_profitability(fy_start, fy_end, as_of):
 
     tot_rev, tot_cost = df["revenue"].sum(), df["cost"].sum(skipna=True)
     contrib = tot_rev - tot_cost
+    loaded = df["loaded_cost"].sum(skipna=True)
+    has_cost = df["cost"].notna()
+    bill_hrs_costed = df.loc[has_cost, "billable_hours"].sum()
     kpi_row(
         [
             {"label": "Revenue", "value": fmt_currency(tot_rev, short=True), "help": f"Basis: {revenue_basis}."},
             {"label": "Direct labor cost", "value": fmt_currency(tot_cost, short=True), "help": f"Basis: {cost_basis}."},
-            {"label": "Labor contribution", "value": fmt_currency(contrib, short=True)},
-            {"label": "Contribution margin", "value": f"{contrib / tot_rev * 100:.0f}%" if tot_rev else "--"},
+            {"label": "Labor contribution margin", "value": f"{contrib / tot_rev * 100:.0f}%" if tot_rev else "--",
+             "help": f"{fmt_currency(contrib)} revenue less direct labor cost."},
+            {"label": "Loaded margin", "value": f"{(tot_rev - loaded) / tot_rev * 100:.0f}%" if tot_rev else "--",
+             "help": f"Revenue less direct cost × (1 + {config.LABOR_BURDEN_RATE:.1%} burden for fringe, "
+                     f"non-labor opex and shared allocations) = {fmt_currency(tot_rev - loaded)}."},
+            {"label": "Loaded cost / billable hr",
+             "value": fmt_currency(loaded / bill_hrs_costed) if bill_hrs_costed else "--",
+             "help": "Blended break-even billing rate across timekeepers with cost data."},
             {"label": "Pro bono investment", "value": fmt_currency(df["pro_bono_cost"].sum(skipna=True), short=True),
-             "help": "Pro bono hours × each person's average cost per hour."},
+             "help": "Pro bono hours × each person's average direct cost per hour."},
         ]
     )
 
@@ -811,7 +870,10 @@ def _section_timekeeper_profitability(fy_start, fy_end, as_of):
         "employee_name": "Timekeeper", "role": "Role", "total_hours": "Total Hours",
         "billable_hours": "Billable Hours", "pro_bono_hours": "Pro Bono Hours", "revenue": "Revenue",
         "cost": "Labor Cost", "contribution": "Contribution", "margin_pct": "Margin %",
-        "revenue_per_hr": "Revenue / Billable Hr", "cost_per_hr": "Cost / Hr",
+        "revenue_per_hr": "Revenue / Billable Hr", "cost_per_billable_hr": "Cost / Billable Hr",
+        "cost_band": "Cost Band", "loaded_cost": "Loaded Cost", "loaded_margin": "Loaded Margin",
+        "loaded_margin_pct": "Loaded Margin %", "margin_band": "Margin Band",
+        "breakeven_hours": "Break-even Hours",
     }
     if "realization_pct" in df:
         cols["realization_pct"] = "Realization %"
@@ -820,18 +882,25 @@ def _section_timekeeper_profitability(fy_start, fy_end, as_of):
         df.sort_values("contribution", ascending=False)[list(cols)].rename(columns=cols),
         use_container_width=True, hide_index=True,
         column_config={
-            **{c: money for c in ["Revenue", "Labor Cost", "Contribution", "Revenue / Billable Hr", "Cost / Hr"]},
+            **{c: money for c in ["Revenue", "Labor Cost", "Contribution", "Revenue / Billable Hr",
+                                  "Cost / Billable Hr", "Loaded Cost", "Loaded Margin"]},
             **{c: st.column_config.NumberColumn(format="%,.1f") for c in ["Total Hours", "Billable Hours", "Pro Bono Hours"]},
             "Margin %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Loaded Margin %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Break-even Hours": st.column_config.NumberColumn(
+                format="%,.0f", help="Billable hours needed at this person's realized rate to cover loaded cost"),
             "Realization %": st.column_config.NumberColumn(format="%.1f%%"),
         },
     )
     n_no_cost = int(df["cost"].isna().sum())
     st.caption(
-        f"Revenue = {revenue_basis}. Cost = {cost_basis}. This is *direct labor* contribution -- rent, "
-        "admin salaries and other overhead aren't allocated, so it's a ranking and trend tool, not "
-        "net profit. Salaried timekeepers carry their full salary cost whether or not their hours "
-        "are billable, which is the point: low-utilization salaried time shows up as low margin."
+        f"Revenue = {revenue_basis}. Cost = {cost_basis}. *Contribution* is revenue less direct labor "
+        f"cost; *Loaded* adds the firm's {config.LABOR_BURDEN_RATE:.1%} burden (fringe 16.4% + non-labor "
+        f"opex + shared allocations). Cost bands: ≤ ${config.COST_PER_BILLABLE_HOUR_BANDS[0]} Efficient, "
+        f"≤ ${config.COST_PER_BILLABLE_HOUR_BANDS[1]} Moderate, above High (direct cost per billable hour). "
+        f"Margin bands on loaded margin: ≥ {config.MARGIN_BANDS[0]}% Healthy, ≥ {config.MARGIN_BANDS[1]}% "
+        "Marginal, below Unprofitable. Salaried timekeepers carry their full salary cost whether or not "
+        "their hours are billable, so low-utilization salaried time shows up as low margin."
         + (f" {n_no_cost} timekeeper(s) didn't match a cost rate and show no cost." if n_no_cost else "")
     )
 

@@ -182,6 +182,11 @@ def build_scorecard(
         hrow = hrs.loc[key] if key in hrs.index else None
         h = {c: (float(hrow[c]) if hrow is not None and c in hrow and pd.notna(hrow[c]) else 0.0) for c in HOURS_COLS}
 
+        # Billable-only history (no credited / not-credited split) can't
+        # measure Total Activity -- left unscored rather than understated.
+        hb = hrow["has_breakdown"] if hrow is not None and "has_breakdown" in hrow else None
+        has_breakdown = True if hb is None or pd.isna(hb) else bool(hb)
+
         cap = t["cap"] * (share if config.CREDITABLE_CAP_PRORATED else 1.0)
         counted = min(h["creditable_hours"], cap)
         chargeable = h["client_hours"] + h["foa_hours"]
@@ -196,6 +201,8 @@ def build_scorecard(
         projected = credited / elapsed_frac if elapsed_frac > 0 else np.nan
 
         total_target = prorate(t["total"])
+        if not has_breakdown:
+            total_hours, total_target = np.nan, None
         total_status = status_for(total_hours, total_target, total_target * elapsed_frac) if total_target else None
 
         bonus_target = prorate(t["bonus"])
@@ -238,6 +245,7 @@ def build_scorecard(
                 "Total Hours": total_hours,
                 "Total Expectation": total_target if total_target is not None else np.nan,
                 "Total %": total_hours / total_target * 100 if total_target else np.nan,
+                "Has Breakdown": has_breakdown,
                 "Total Status": total_status or "",
                 "Bonus Hours": bonus_hours,
                 "Bonus Threshold": bonus_target if bonus_target is not None else np.nan,
@@ -256,7 +264,7 @@ SCORECARD_COLS = [
     "Creditable NB (logged)", "Creditable Cap", "Creditable NB (counted)", "Creditable NB (over cap)",
     "Other NB", "Time Off", "Annual Expectation", "Expectation", "Credited Hours", "Expected to Date",
     "Variance to Expected", "% of Expectation", "Pace %", "Projected", "Remaining", "Needed / Week",
-    "Expectation Status", "Total Hours", "Total Expectation", "Total %", "Total Status", "Bonus Hours",
+    "Expectation Status", "Total Hours", "Total Expectation", "Total %", "Total Status", "Has Breakdown", "Bonus Hours",
     "Bonus Threshold", "Bonus %", "Bonus Status", "Bonus Credited Hours", "Status", "has_hours",
 ]
 

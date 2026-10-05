@@ -101,6 +101,10 @@ SOURCE_FILE_PATTERNS = {
     # (one tab per timekeeper: requirement header + one row per month).
     # Backfills closed measuring periods -- see parse_monthly_hours_workbook.py.
     "monthly_hours_workbook": ["*Monthly*Hours*Report*.xlsx"],
+    # The firm's "Billing Hours Analysis" workbook -- its "FY20xx — Monthly
+    # Billable" tabs backfill billable-only history (e.g. FY2025). See
+    # parse_billing_hours_analysis.py.
+    "billing_hours_analysis": ["*Billing*Hours*Analysis*.xlsx"],
     "labor_detail": ["*Labor*Detail*.csv", "*Labor*Detail*.xlsx", "*Time*Analysis*.csv", "*Time*Analysis*.xlsx"],
     "nte_tracking": ["*NTE*Tracking*.xlsx"],
 }
@@ -337,6 +341,20 @@ LABOR_BILLABLE_STATUS_CODES = {"B", "H", "F", "T"}
 # prorated target scaled to how much of the person's available time has
 # elapsed): >= first value is On Track, >= second is Watch, else Behind.
 PACE_STATUS_THRESHOLDS = (0.95, 0.85)
+
+# ---------------------------------------------------------------------------
+# Profitability (Measuring Period page). From the firm's draft
+# profitability analysis: loaded cost = direct salary/labor cost x
+# (1 + LABOR_BURDEN_RATE), where the burden covers fringe (16.4%) plus
+# non-labor opex and shared allocations -- 103.4% in total. Update when
+# finance re-derives it.
+# ---------------------------------------------------------------------------
+LABOR_BURDEN_RATE = 1.0344
+# Cost per billable hour bands ($/hr): <= first = Efficient, <= second =
+# Moderate, above = High cost relative to billable output.
+COST_PER_BILLABLE_HOUR_BANDS = (150, 250)
+# Margin bands (%): >= first = Healthy, >= second = Marginal, below = Unprofitable.
+MARGIN_BANDS = (30, 10)
 
 # Hand-maintained reference files (employee_targets.csv, leave.csv) --
 # override the folder with SOMOS_REFERENCE_DIR, e.g. to keep them in the

@@ -160,6 +160,8 @@ def _parse_sheet(ws, source_file: str) -> list[dict]:
                 "note": None,
                 "sheet": ws.title,
                 "source_file": source_file,
+                "has_breakdown": True,
+                "role_hint": None,
             }
         )
     if note:
