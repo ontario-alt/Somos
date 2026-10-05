@@ -180,7 +180,12 @@ def person_profile_html(row: pd.Series, figs: list, fy_start, fy_end, role_label
     ])
     charts = ""
     for i, f in enumerate(figs):
-        charts += f'<div class="chart">{f.to_html(full_html=False, include_plotlyjs=(i == 0), config={"displayModeBar": False})}</div>'
+        # Size each chart to its grid cell (fixed widths overflow and overlap).
+        h = int(f.layout.height or 380)
+        f.update_layout(autosize=True, width=None)
+        charts += ('<div class="chart">' + f.to_html(
+            full_html=False, include_plotlyjs=(i == 0), default_width="100%", default_height=f"{h}px",
+            config={"displayModeBar": False, "responsive": True}) + "</div>")
     detail_rows = [
         ("Annual Hours Expectation", row.get("Annual Expectation")), ("Leave days (approved)", row.get("Leave Days")),
         ("Prorated Hours Expectation", row.get("Expectation")),
@@ -208,8 +213,8 @@ h1 {{ font-size:22px; margin:0 0 4px; }} h2 {{ font-size:16px; margin:28px 0 8px
 .kpis {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:18px 0; }}
 .kpi {{ border:1px solid #e1e0d9; border-radius:8px; padding:10px 12px; background:#fff; }}
 .kpi .v {{ font-size:22px; font-weight:600; }} .kpi .l {{ color:#52514e; font-size:12px; }}
-.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:12px; }}
-.chart {{ background:#fff; border:1px solid #e1e0d9; border-radius:8px; padding:6px; }}
+.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(460px,1fr)); gap:12px; }}
+.chart {{ background:#fff; border:1px solid #e1e0d9; border-radius:8px; padding:6px; min-width:0; overflow:hidden; }}
 table {{ border-collapse:collapse; width:100%; max-width:560px; font-size:13px; background:#fff; }}
 td {{ border-bottom:1px solid #e1e0d9; padding:6px 8px; text-align:right; }} td.txt {{ text-align:left; color:#52514e; }}
 ul {{ color:#52514e; font-size:12px; }}
@@ -221,4 +226,10 @@ ul {{ color:#52514e; font-size:12px; }}
 <div class="grid">{charts}</div>
 <h2>Detail</h2><table>{detail}</table>
 {f'<h2>Notes</h2><ul>{notes_html}</ul>' if notes_html else ''}
+<script>
+// Charts can size themselves before the grid settles; re-measure once loaded.
+window.addEventListener("load", function () {{
+  document.querySelectorAll(".js-plotly-plot").forEach(function (p) {{ Plotly.Plots.resize(p); }});
+}});
+</script>
 </body></html>"""

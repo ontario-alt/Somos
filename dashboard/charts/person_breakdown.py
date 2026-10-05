@@ -101,8 +101,9 @@ def requirement_bullets(row: pd.Series, lo: float = 90) -> go.Figure:
                            font=dict(size=12, color=INK_PRIMARY))
     fig = apply_layout(fig, title="Against each requirement (prorated; tick = requirement)",
                        height=120 + 70 * max(len(tests), 1), legend=False)
-    fig.update_xaxes(range=[0, xmax], title_text="Hours", showgrid=True)
+    fig.update_xaxes(range=[0, xmax], title_text="Hours", showgrid=True, automargin=True)
     fig.update_yaxes(autorange="reversed", showgrid=False, automargin=True)
+    fig.update_layout(margin=dict(b=50))
     return fig
 
 
@@ -140,7 +141,8 @@ def peer_strip(scorecard: pd.DataFrame, name: str, role_label: str) -> go.Figure
         text=[f"{fmt_pct_smart(v)}" for v in d.loc[is_me, "% of Expectation"]], textposition="top center",
         hovertemplate=name + ": %{x:.1f}%<extra></extra>"))
     fig.add_vline(x=100, line_dash="dot", line_color=INK_MUTED)
-    fig = apply_layout(fig, title=f"Among {role_label} (% of Hours Expectation)", height=200, legend=False)
+    fig = apply_layout(fig, title=f"Among {role_label} (% of Hours Expectation)", height=230, legend=False)
     fig.update_yaxes(visible=False, range=[-1, 1.2])
+    fig.update_layout(margin=dict(b=40))
     fig.update_xaxes(ticksuffix="%", range=[0, max(115, float(d["% of Expectation"].max() or 0) + 8)])
     return fig
