@@ -18,7 +18,8 @@ the full breakdown, and this workbook's FY2024 tab is a copy of its
 "Billable" column, which already includes credited non-billable hours.
 
 The group header a row sits under is kept as `role_hint` (Attorneys ->
-Attorney, Planners -> Planner); bracketed tags like "[Contractor]" or
+Attorney; Planners and Other Profs, i.e. Project Specialists -> Planner);
+it applies only to people not listed in employee_targets.csv. Bracketed tags like "[Contractor]" or
 "[Executive Office]" mark people without a role requirement.
 
 Other tabs (the YTD "Billable Hours Analysis" summary, cost per billable
@@ -42,7 +43,11 @@ logger = logging.getLogger("somos.etl.billing_hours_analysis")
 
 _MONTH_RE = re.compile(r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*['’]?\s*(\d{2,4})$", re.I)
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
-_GROUP_ROLES = {"attorneys": "Attorney", "planners": "Planner"}
+# "Other Profs" are Project Specialists (1,600, same as Planners). Anyone
+# in these groups without a requirement (e.g. a contractor) is blank in
+# employee_targets.csv, which overrides the group.
+_GROUP_ROLES = {"attorneys": "Attorney", "planners": "Planner", "other profs": "Planner",
+                "other professionals": "Planner"}
 _TAG_RE = re.compile(r"\[([^\]]+)\]")
 
 

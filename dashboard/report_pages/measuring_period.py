@@ -147,7 +147,8 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
         )
         if people is None:
             people = pd.DataFrame(columns=_PEOPLE_COLS)
-        people = people.merge(wb, on="name_key", how="outer", suffixes=("", "_wb"))
+        people = people.assign(in_targets=True).merge(wb, on="name_key", how="outer", suffixes=("", "_wb"))
+        people["in_targets"] = people["in_targets"].astype("boolean").fillna(False).astype(bool)
         people["full_name"] = people["full_name"].fillna(people.pop("full_name_wb"))
         for col, wb_col in (("billable_target", "wb_billable"), ("credit_cap", "wb_cap"), ("total_target", "wb_total")):
             people[col] = pd.to_numeric(people[col], errors="coerce").fillna(people.pop(wb_col))
@@ -156,8 +157,11 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
         by_target = {v: k for k, v in config.BILLABLE_HOUR_TARGETS.items()}
         people["role"] = people["role"].fillna(people["billable_target"].map(by_target))
         # Billable-only history carries the report's own grouping
-        # (Attorneys / Planners) instead of a requirement.
-        people["role"] = people["role"].fillna(people.pop("role_hint"))
+        # (Attorneys / Planners / Other Profs) instead of a requirement --
+        # used only for people not in employee_targets.csv, where a blank
+        # target_type is a deliberate "no requirement".
+        hint = people.pop("role_hint")
+        people["role"] = people["role"].where(people["in_targets"], people["role"].fillna(hint))
     return people
 
 
@@ -528,6 +532,28 @@ def _section_timekeeper_hours(fy_start: datetime.date, fy_end: datetime.date, as
         _classification_review(fy_start, as_of)
 
 
+def _late_starters(sc, people, source, fy_start, as_of) -> list[str]:
+    """Scored people with no start_date whose first hours in the period
+    come more than a month after it began -- likely mid-period hires whose
+    requirement isn't being prorated."""
+    if source == "labor_detail":
+        first = query(
+            "SELECT name_key, MIN(transaction_date) AS first_day FROM labor_detail "
+            "WHERE transaction_date BETWEEN ? AND ? AND hours > 0 GROUP BY name_key", [fy_start, as_of])
+    elif source == "monthly_hours":
+        first = query(
+            "SELECT name_key, MIN(month) AS first_day FROM monthly_hours "
+            "WHERE month BETWEEN ? AND ? AND billable_to_clients + nb_credited + nb_not_credited > 0 "
+            "GROUP BY name_key", [fy_start, as_of])
+    else:
+        return []
+    no_start = set(people.loc[people["start_date"].isna(), "name_key"])
+    cutoff = pd.Timestamp(fy_start) + pd.DateOffset(months=1)
+    f = first[first["name_key"].isin(set(sc["name_key"]) & no_start)]
+    f = f[pd.to_datetime(f["first_day"]) >= cutoff].merge(sc[["name_key", "Timekeeper"]], on="name_key")
+    return [f"{r.Timekeeper} (first hours {pd.Timestamp(r.first_day):%b %Y})" for r in f.sort_values("first_day").itertuples()]
+
+
 _CATEGORY_LABELS = {
     "foa": "Firm's Own Account (counts)", "pro_bono": "Pro bono (counts in full)",
     "creditable": "Creditable non-billable (capped)", "other": "Other non-billable (Total Activity only)",
@@ -683,6 +709,13 @@ def _hours_data_quality(sc, hours, people, leave, source, fy_start, as_of):
                 f"Partial final month in the workbook with no end_date in employee_targets.csv (their "
                 f"requirements aren't prorated for leaving): {', '.join(no_end)}"
             )
+    late = _late_starters(sc, people, source, fy_start, as_of)
+    if late:
+        issues.append(
+            "**First hours logged well after the period began, with no start_date** -- if they joined "
+            "mid-period their requirement should be prorated (policy §1a); add start_date to "
+            "employee_targets.csv: " + ", ".join(late)
+        )
     if not leave.empty:
         unmatched_leave = leave[~leave["name_key"].isin(set(people["name_key"]))]
         if not unmatched_leave.empty:
