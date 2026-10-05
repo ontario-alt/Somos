@@ -117,11 +117,29 @@ def person_targets(p: pd.Series) -> dict:
         v = _num_or_none(p.get(col))
         return v if v is not None else (float(default) if default is not None else None)
 
+    expectation = pick("billable_target", config.BILLABLE_HOUR_TARGETS.get(role))
+    role_exp = config.BILLABLE_HOUR_TARGETS.get(role)
+
+    def scaled(col, table):
+        # Individual terms that set only the Hours Expectation: scale the
+        # role's other requirements by the same ratio (e.g. a 1,500
+        # planner guideline -> bonus threshold 1,550 x 1,500/1,600), so the
+        # bonus threshold never sits above the person's own expectation.
+        v = _num_or_none(p.get(col))
+        if v is not None:
+            return v
+        base = table.get(role)
+        if base is None:
+            return None
+        if role_exp and expectation is not None and expectation != role_exp:
+            return float(base) * expectation / role_exp
+        return float(base)
+
     return {
-        "expectation": pick("billable_target", config.BILLABLE_HOUR_TARGETS.get(role)),
+        "expectation": expectation,
         "cap": pick("credit_cap", config.CREDITABLE_NB_CAP),
-        "total": pick("total_target", config.TOTAL_HOUR_TARGETS.get(role)),
-        "bonus": pick("bonus_threshold", config.BONUS_HOUR_THRESHOLDS.get(role)),
+        "total": scaled("total_target", config.TOTAL_HOUR_TARGETS),
+        "bonus": scaled("bonus_threshold", config.BONUS_HOUR_THRESHOLDS),
     }
 
 

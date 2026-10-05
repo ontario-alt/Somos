@@ -35,7 +35,10 @@ def _fmt(v, kind: str) -> str:
     return f'<span class="pill {cls}">{s}</span>' if cls else s
 
 
-def _table(df: pd.DataFrame, cols: list[tuple[str, str]]) -> str:
+def _table(df: pd.DataFrame, cols: list[tuple[str, str]], drop_empty: set[str] = frozenset()) -> str:
+    # Columns with nothing to say for this period (all zero / blank, e.g.
+    # FOA and pro bono in billable-only history) are left out.
+    cols = [(c, k) for c, k in cols if not (c in drop_empty and (df[c].isna() | (df[c] == 0) | (df[c] == "")).all())]
     head = "".join(f"<th>{html.escape(c)}</th>" for c, _ in cols)
     rows = "".join(
         "<tr>" + "".join(f'<td class="{k}">{_fmt(r[c], k)}</td>' for c, k in cols) + "</tr>"
@@ -47,16 +50,22 @@ def _table(df: pd.DataFrame, cols: list[tuple[str, str]]) -> str:
 def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, notes: list[str] | None = None) -> str:
     closed = as_of >= fy_end
     n = len(sc)
+    has_total = bool(sc["Has Breakdown"].any()) if "Has Breakdown" in sc else True
     met = int((sc["Status"] == "Met").sum())
     bonus = int((sc["Bonus Status"] == "Eligible").sum())
     short = int(sc["Status"].isin(["Not Met", "Behind", "Watch"]).sum())
+    met_label = ("Met both requirements" if has_total else "Met Hours Expectation") if closed else "Met / on track"
     kpis = [
         ("Timekeepers", f"{n}"),
-        ("Met both requirements" if closed else "Met / on track", f"{met if closed else met + int((sc['Status'] == 'On Track').sum())}"),
+        (met_label, f"{met if closed else met + int((sc['Status'] == 'On Track').sum())}"),
         ("Short" if closed else "Watch / behind", f"{short}"),
         ("Bonus eligible", f"{bonus}"),
-        ("Pro bono hours", f"{sc['Pro Bono'].sum():,.0f}"),
     ]
+    if has_total:
+        kpis.append(("Pro bono hours", f"{sc['Pro Bono'].sum():,.0f}"))
+    else:
+        promo = int((sc.get("Promotion Lookback", pd.Series(dtype=str)) == "Meets 90% test").sum())
+        kpis.append(("Meet 2-yr promotion test", f"{promo}"))
     kpi_html = "".join(f'<div class="kpi"><div class="v">{v}</div><div class="l">{html.escape(l)}</div></div>' for l, v in kpis)
 
     expected_pct = sc["Expected to Date"] / sc["Expectation"].where(sc["Expectation"] > 0) * 100
@@ -74,7 +83,8 @@ def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, not
             ("Projected", "hrs"), ("Expectation Status", "txt"), ("Total Hours", "hrs"), ("Total Expectation", "hrs"),
             ("Total Status", "txt"), ("Bonus Hours", "hrs"), ("Bonus Threshold", "hrs"), ("Bonus Status", "txt"),
             ("2-yr Avg %", "pct"), ("Promotion Lookback", "txt"),
-        ]))
+        ], drop_empty={"FOA", "Pro Bono", "Creditable NB (counted)", "Total Hours", "Total Expectation",
+                       "Total Status", "2-yr Avg %"}))
 
     reqs = "; ".join(
         f"{_ROLE_LABELS[k]}: {v:,} expectation / {config.TOTAL_HOUR_TARGETS.get(k, 0):,} total activity / "
