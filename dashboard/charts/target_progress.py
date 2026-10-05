@@ -51,7 +51,7 @@ def target_progress(df: pd.DataFrame, expected_pct: pd.Series | None = None) -> 
     fig = apply_layout(fig, height=max(260, 26 * len(d) + 90))
     fig.update_layout(barmode="overlay", bargap=0.35)
     fig.update_xaxes(title_text="Credited hours, % of prorated Hours Expectation", ticksuffix="%", showgrid=True, automargin=True)
-    fig.update_yaxes(showgrid=False, automargin=True)
+    fig.update_yaxes(showgrid=False, automargin=True, categoryorder="array", categoryarray=d["Timekeeper"].tolist())
     return fig
 
 
@@ -139,5 +139,6 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
     fig.update_layout(barmode="overlay", bargap=0.3, margin=dict(t=70 if title else 50))
     fig.update_xaxes(range=[0, x_max], ticksuffix="%", dtick=10, showgrid=True, automargin=True,
                      title_text="Credited hours, % of prorated Hours Expectation")
-    fig.update_yaxes(showgrid=False, automargin=True)
+    # Order by value, not by which color group's trace came first.
+    fig.update_yaxes(showgrid=False, automargin=True, categoryorder="array", categoryarray=d["Timekeeper"].tolist())
     return fig
