@@ -18,7 +18,7 @@ every other snapshot-dated source in this warehouse does.
 Output grain: one row per (entity, employee):
     entity, employee_name, total_hours, billable_hours, credited_hours,
     not_credited_hours, pto_hours, hol_hours, period_start, period_end,
-    source_file
+    source_file, data_error
 """
 from __future__ import annotations
 
@@ -100,6 +100,16 @@ def _parse_one(path: Path) -> list[dict]:
                     },
                 }
             )
+            # Negative hours (seen: one row at about -1,000,000 total) are a bad
+            # timesheet entry / adjustment in Vantagepoint, not real time --
+            # kept but flagged, and left out of every figure on the dashboard.
+            r = rows[-1]
+            r["data_error"] = any((r.get(f) or 0) < 0 for f in _COL_MAP.values())
+            if r["data_error"]:
+                logger.warning(
+                    "%s: negative hours for %s (%s) -- excluded from the dashboard; fix the timesheet in Vantagepoint",
+                    path.name, name, entity,
+                )
 
     total_billable = round(sum(r.get("billable_hours") or 0.0 for r in rows), 1)
     logger.info(
@@ -112,10 +122,14 @@ def parse(paths: list[Path] | None = None) -> list[dict]:
     paths = paths if paths is not None else find_all_files(config.RAW_DATA_DIR, config.SOURCE_FILE_PATTERNS["timekeeper_hours"])
     if not paths:
         return []
-    all_rows: list[dict] = []
-    for path in paths:
-        all_rows.extend(_parse_one(path))
-    return all_rows
+    # One export per measuring period: a re-export (or re-upload) of the same
+    # period replaces the earlier file rather than adding to it.
+    by_period: dict = {}
+    for path in paths:  # oldest -> newest by mtime
+        rows = _parse_one(path)
+        if rows:
+            by_period[rows[0]["period_end"]] = rows
+    return [r for rows in by_period.values() for r in rows]
 
 
 def write_processed(rows: list[dict], out_path: Path | None = None) -> Path | None:

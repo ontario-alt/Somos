@@ -69,7 +69,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 _TEXT_COLUMNS = {
     "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
     "client_name_confidence", "target_type", "employee_number", "name_key", "matter_name",
-    "labor_code", "billing_status", "leave_type", "note", "sheet", "hours_category", "role_hint",
+    "labor_code", "billing_status", "leave_type", "note", "sheet", "hours_category", "role_hint", "staff_group",
 }
 # Optional date columns that are often entirely blank (nobody joined or
 # left mid-period, no open-ended leave) -- an all-None column would
@@ -257,6 +257,10 @@ def build(snapshot_date: date | None = None) -> Path:
     # --- Timekeeper hours (measuring period, per entity) -----------------
     tk_hours_rows = parse_timekeeper_hours.parse()
     parse_timekeeper_hours.write_processed(tk_hours_rows)
+    # Every export is re-read each run (newest per period wins), so rebuilt
+    # rather than upserted -- also keeps the schema current.
+    if tk_hours_rows:
+        con.execute("DROP TABLE IF EXISTS timekeeper_hours")
     _create_table(con, "timekeeper_hours", tk_hours_rows, snapshot_date, snapshot_date_col="period_end")
 
     # --- Labor (time) detail -- transaction-level, measuring period -------

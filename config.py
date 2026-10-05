@@ -295,7 +295,21 @@ TARGET_TYPE_ALIASES = {
     "LLC": "Planner",
     "ASSOCIATE": "Attorney",
     "PROJECT SPECIALIST": "Planner",
+    "GROUP 1": "Attorney",
+    "GROUP 2": "Planner",
+    "PROFESSIONAL STAFF": "Planner",
 }
+# How the two roles are labeled on the dashboard and in reports.
+ROLE_LABELS = {
+    "Attorney": "Group 1 — Attorney timekeepers",
+    "Planner": "Group 2 — Professional staff timekeepers",
+    "Custom": "Individual terms",
+}
+# Staff kept off the hours chart but summarized together for review:
+# everyone billing through these entities, plus anyone whose staff_group in
+# employee_targets.csv is listed here.
+REVIEW_EXCLUDED_ENTITIES = {"Somos Group Mexico": "Somos MX"}
+REVIEW_EXCLUDED_STAFF_GROUPS = {"Administrative": "Administrative"}
 
 # How each time entry is put in a policy category (classify_time()).
 # The billing system's project/file numbers have changed since the

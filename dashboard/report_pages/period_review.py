@@ -72,6 +72,8 @@ def render():
         )
         return
     sc = mp._add_promotion_lookback(sc, fy_start)
+    excluded, off_chart = _excluded_people(people, hours, fy_start, source)
+    sc = sc[~sc["name_key"].isin(off_chart)]
     sc_all, sc = sc, sc[sc["has_hours"]].copy()
     leave = mp._load_leave()
     sc["Zone"] = sc["% of Expectation"].map(lambda v: window_zone(v, lo, hi))
@@ -102,7 +104,8 @@ def render():
         return
 
     st.subheader("Hours vs. prorated Hours Expectation")
-    st.plotly_chart(evaluation_window_chart(view, lo, hi), use_container_width=True)
+    st.plotly_chart(evaluation_window_chart(view, lo, hi), use_container_width=True,
+                    config={"displayModeBar": False})
     st.caption(
         f"Each bar is credited hours (client + Firm's Own Account + pro bono + creditable non-billable "
         f"up to the {config.CREDITABLE_NB_CAP}-hour cap) as a % of the person's Hours Expectation "
@@ -112,6 +115,7 @@ def render():
 
     _window_table(view, lo, hi)
     _leave_panel(sc_all, people, leave, fy_start, fy_end)
+    _excluded_summary(excluded)
     _scorecard_tabs(view, roles)
 
     notes = _report_notes(source, sc, leave)
@@ -144,7 +148,8 @@ def render():
     if source in ("labor_detail", "monthly_hours"):
         tracked = people[people["name_key"].isin(view["name_key"])]
         mp._person_drilldown(tracked, view, leave, fy_start, fy_end, fy_end, source)
-    mp._hours_data_quality(sc_all, hours, people, leave, source, fy_start, fy_end)
+    # Excluded groups are summarized above -- not repeated as "no requirement".
+    mp._hours_data_quality(sc_all, hours[~hours["name_key"].isin(off_chart)], people, leave, source, fy_start, fy_end)
     if source == "labor_detail":
         mp._classification_review(fy_start, fy_end)
 
@@ -153,7 +158,7 @@ def render():
 
 
 def _role_label(r: str) -> str:
-    return {"Attorney": "Associates (attorneys)", "Planner": "Planners & Project Specialists"}.get(r, "Individual terms")
+    return config.ROLE_LABELS.get(r, config.ROLE_LABELS["Custom"])
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +188,8 @@ def _has_period_hours(fy_start, fy_end) -> bool:
 def _upload_panel(fy_start, fy_end, expanded: bool):
     with st.expander("Upload hours from Vantagepoint", expanded=expanded):
         st.markdown(_REPORT_HELP.format(start=f"{fy_start:%m/%d/%Y}", end=f"{fy_end:%m/%d/%Y}"))
-        up = st.file_uploader("Time-detail export (.xlsx or .csv)", type=["xlsx", "csv"], key="period_review_upload")
+        up = st.file_uploader("Time-detail export (.xlsx / .csv), or the All Timekeepers Hours summary (.csv)",
+                              type=["xlsx", "csv"], key="period_review_upload")
         if up is None:
             return
         from etl import parse_labor_detail
@@ -192,6 +198,9 @@ def _upload_panel(fy_start, fy_end, expanded: bool):
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(up.getbuffer())
             tmp_path = Path(tmp.name)
+        if suffix == ".csv" and _is_hours_summary(tmp_path):
+            _summary_upload(tmp_path, up.name, fy_start, fy_end)
+            return
         rows = parse_labor_detail._parse_one(tmp_path)
         if not rows:
             st.error(
@@ -225,6 +234,51 @@ def _upload_panel(fy_start, fy_end, expanded: bool):
             _rebuild(f"Loaded {up.name} -> {dest.name}")
 
 
+def _is_hours_summary(path: Path) -> bool:
+    """The 'All Timekeepers Hours' summary export (one row per person per
+    company, period in the column headers) rather than a time-detail export."""
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        header = f.readline().lower()
+    return "employee name" in header and "billable hours" in header and "credited hours" in header
+
+
+def _summary_upload(tmp_path: Path, original_name: str, fy_start, fy_end):
+    from etl import parse_timekeeper_hours
+
+    rows = parse_timekeeper_hours._parse_one(tmp_path)
+    if not rows:
+        st.error("Couldn't read any timekeeper rows from this All Timekeepers Hours export.")
+        return
+    df = pd.DataFrame(rows)
+    p_start, p_end = rows[0]["period_start"], rows[0]["period_end"]
+    st.info(
+        "This is the **All Timekeepers Hours** summary (one total per person per company). It works for "
+        "the year-end scorecard, but it can't separate pro bono from other credited time or show "
+        "month-by-month detail -- the time-detail export can.", icon="ℹ️")
+    c = st.columns(4)
+    c[0].metric("Timekeepers", f"{df['employee_name'].nunique()}")
+    c[1].metric("Companies", f"{df['entity'].nunique()}")
+    c[2].metric("Period in file", f"{p_start:%m/%d/%y} – {p_end:%m/%d/%y}")
+    good = df[~df["data_error"]]
+    c[3].metric("Billable hours", f"{good['billable_hours'].sum():,.0f}")
+    bad = df[df["data_error"]]
+    if not bad.empty:
+        st.warning(
+            "Negative hours -- a bad timesheet entry or adjustment in Vantagepoint. These rows are excluded; "
+            "fix them at the source and re-export: "
+            + ", ".join(f"{r.employee_name} ({r.entity}: {r.total_hours:,.1f} total)" for r in bad.itertuples()))
+    if (p_start, p_end) != (fy_start, fy_end):
+        st.error(f"This export covers {p_start:%m/%d/%Y} – {p_end:%m/%d/%Y}, not this page's period "
+                 f"({fy_start:%m/%d/%Y} – {fy_end:%m/%d/%Y}). Re-run it for the right dates.")
+        return
+    if st.button("Load into dashboard", type="primary"):
+        config.RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        dest = config.RAW_DATA_DIR / f"All_Timekeepers_Hours_FY{fy_end.year}_upload_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
+        shutil.copyfile(tmp_path, dest)
+        tmp_path.unlink(missing_ok=True)
+        _rebuild(f"Loaded {original_name} -> {dest.name}")
+
+
 def _rebuild(message: str):
     from dashboard.data import release_connection
     from etl.build_warehouse import build
@@ -250,6 +304,84 @@ def _coverage_note(source, fy_start, fy_end):
             f"Hours for this period come from {mp._SOURCE_LABELS.get(source, source)}, not a Vantagepoint "
             "time-detail export -- pro bono / creditable time may be missing or approximated. Upload the "
             "time-detail export above for exact figures."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Excluded groups (Administrative, Somos MX): off the chart, summarized
+# ---------------------------------------------------------------------------
+def _person_hours(people, hours, fy_start, source) -> pd.DataFrame:
+    """Per person-and-entity hours (total, billable, credited, other, time off)."""
+    if source == "timekeeper_hours":
+        raw = mp._timekeeper_hours_rows(fy_start)
+        return raw.rename(columns={"billable_hours": "billable", "credited_hours": "credited",
+                                   "other_hours": "other", "time_off_hours": "time_off"})[
+            ["name_key", "employee_name", "entity", "billable", "credited", "other", "time_off"]]
+    h = hours.copy()
+    h["billable"] = h["client_hours"] + h["foa_hours"]
+    h["credited"] = h["pro_bono_hours"] + h["creditable_hours"]
+    h = h.rename(columns={"other_hours": "other", "time_off_hours": "time_off", "entities": "entity"})
+    return h[["name_key", "employee_name", "entity", "billable", "credited", "other", "time_off"]]
+
+
+def _excluded_people(people, hours, fy_start, source) -> tuple[pd.DataFrame, set]:
+    """(rows to summarize, people to keep off the chart). Rows (person x
+    entity) belong to an excluded group if the person's staff_group is in
+    config.REVIEW_EXCLUDED_STAFF_GROUPS or the hours were billed through
+    config.REVIEW_EXCLUDED_ENTITIES; every such row is summarized. A person
+    leaves the chart only if all of their hours fall in excluded rows."""
+    ph = _person_hours(people, hours, fy_start, source)
+    groups = people.set_index("name_key")["staff_group"] if "staff_group" in people else pd.Series(dtype=str)
+    def group_for(r):
+        g = groups.get(r["name_key"]) if r["name_key"] in groups.index else None
+        if isinstance(g, str) and g in config.REVIEW_EXCLUDED_STAFF_GROUPS:
+            return config.REVIEW_EXCLUDED_STAFF_GROUPS[g]
+        for ent, label in config.REVIEW_EXCLUDED_ENTITIES.items():
+            if ent in str(r["entity"] or ""):
+                return label
+        return None
+    ph["group"] = ph.apply(group_for, axis=1)
+    all_excluded = ph.groupby("name_key")["group"].apply(lambda g: g.notna().all())
+    return ph[ph["group"].notna()], set(all_excluded[all_excluded].index)
+
+
+def _excluded_summary(ex: pd.DataFrame):
+    if ex.empty:
+        return
+    ex = ex.assign(activity=ex["billable"] + ex["credited"] + ex["other"])
+    agg = ex.groupby("group").agg(
+        people=("name_key", "nunique"), activity=("activity", "sum"), billable=("billable", "sum"),
+        credited=("credited", "sum"), other=("other", "sum"), time_off=("time_off", "sum"),
+    ).reset_index()
+    agg["avg"] = agg["activity"] / agg["people"]
+    agg["billable_pct"] = agg["billable"] / agg["activity"].where(agg["activity"] > 0) * 100
+    labels = " and ".join(agg["group"])
+    with st.expander(f"Excluded from the chart — {labels} (aggregate review)", expanded=False):
+        st.caption(
+            "These staff have no hourly requirement and are kept off the chart above, but their hours are "
+            "summarized here for review. Activity = billable + credited + other non-billable (PTO and "
+            "holidays shown separately)."
+        )
+        h = st.column_config.NumberColumn(format="%,.1f")
+        st.dataframe(
+            agg.rename(columns={"group": "Group", "people": "People", "activity": "Activity Hours",
+                                "billable": "Billable", "credited": "Credited", "other": "Other Non-billable",
+                                "time_off": "PTO + Holiday", "avg": "Avg Activity / Person",
+                                "billable_pct": "Billable %"}),
+            use_container_width=True, hide_index=True,
+            column_config={c: h for c in ["Activity Hours", "Billable", "Credited", "Other Non-billable",
+                                          "PTO + Holiday", "Avg Activity / Person"]}
+                          | {"Billable %": st.column_config.NumberColumn(format="%.0f%%")},
+        )
+        st.markdown("**By person**")
+        st.dataframe(
+            ex.sort_values(["group", "employee_name"])[
+                ["group", "employee_name", "entity", "activity", "billable", "credited", "other", "time_off"]]
+            .rename(columns={"group": "Group", "employee_name": "Name", "entity": "Company",
+                             "activity": "Activity Hours", "billable": "Billable", "credited": "Credited",
+                             "other": "Other Non-billable", "time_off": "PTO + Holiday"}),
+            use_container_width=True, hide_index=True,
+            column_config={c: h for c in ["Activity Hours", "Billable", "Credited", "Other Non-billable", "PTO + Holiday"]},
         )
 
 

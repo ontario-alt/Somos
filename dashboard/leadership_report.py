@@ -17,7 +17,7 @@ import pandas as pd
 import config
 from dashboard.charts.target_progress import target_progress
 
-_ROLE_LABELS = {"Attorney": "Associates (attorneys)", "Planner": "Planners & Project Specialists", "Custom": "Individual terms"}
+_ROLE_LABELS = config.ROLE_LABELS
 _STATUS_CLASS = {"Met": "good", "Eligible": "good", "Meets 90% test": "good", "On Track": "ok", "On pace": "ok",
                  "Watch": "warn", "Behind": "bad", "Not Met": "bad", "Not met": "bad", "Not on pace": "bad",
                  "Below 90%": "bad"}

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import datetime
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -102,7 +103,7 @@ def _default_as_of() -> datetime.date:
 
 _PEOPLE_COLS = [
     "full_name", "name_key", "employee_number", "role", "start_date", "end_date",
-    "billable_target", "credit_cap", "total_target", "bonus_threshold",
+    "billable_target", "credit_cap", "total_target", "bonus_threshold", "staff_group",
 ]
 
 
@@ -115,7 +116,7 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
     people = None
     if table_exists("employee_targets"):
         cols = set(query("SELECT * FROM employee_targets LIMIT 0").columns)
-        if "name_key" not in cols or "bonus_threshold" not in cols:
+        if "name_key" not in cols or "staff_group" not in cols:
             st.warning(
                 "The warehouse's employee_targets table is from an older version -- click "
                 "**Refresh data** (or run `python etl/build_warehouse.py`) to rebuild it."
@@ -126,7 +127,7 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
         people = query(
             """
             SELECT full_name, name_key, employee_number, target_type AS role, start_date, end_date,
-                   billable_target, credit_cap, total_target, bonus_threshold
+                   billable_target, credit_cap, total_target, bonus_threshold, staff_group
             FROM employee_targets
             WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM employee_targets)
             """
@@ -235,24 +236,44 @@ def _load_hours(fy_start, as_of, source: str) -> pd.DataFrame:
             [fy_start, as_of],
         )
     if source == "timekeeper_hours":
-        raw = query(
-            """
-            SELECT entity, employee_name, billable_hours, credited_hours, not_credited_hours
-            FROM timekeeper_hours WHERE period_start = ?
-            """,
-            [fy_start],
-        )
-        raw["name_key"] = raw["employee_name"].map(name_key)
+        raw = _timekeeper_hours_rows(fy_start)
         df = raw.groupby("name_key", as_index=False).agg(
             employee_name=("employee_name", "first"),
             client_hours=("billable_hours", "sum"),
             creditable_hours=("credited_hours", "sum"),
-            other_hours=("not_credited_hours", "sum"),
+            other_hours=("other_hours", "sum"),
+            time_off_hours=("time_off_hours", "sum"),
             entities=("entity", lambda s: ", ".join(sorted(set(s.dropna())))),
         )
-        df["foa_hours"] = df["pro_bono_hours"] = df["time_off_hours"] = 0.0
+        df["foa_hours"] = df["pro_bono_hours"] = 0.0
         return df
     return pd.DataFrame()
+
+
+def _timekeeper_hours_rows(fy_start) -> pd.DataFrame:
+    """All Timekeepers Hours rows for the period, rows with negative hours
+    (bad Vantagepoint entries) excluded. Its Total Hours includes PTO,
+    holidays and time not flagged billable / credited / not credited, so
+    non-credited activity = Total - PTO - HOL - Billable - Credited (never
+    less than the Not Credited column)."""
+    cols = set(query("SELECT * FROM timekeeper_hours LIMIT 0").columns)
+    err = "AND NOT COALESCE(data_error, FALSE)" if "data_error" in cols else ""
+    raw = query(
+        f"""
+        SELECT entity, employee_name, total_hours, billable_hours, credited_hours, not_credited_hours,
+               pto_hours, hol_hours
+        FROM timekeeper_hours WHERE period_start = ? {err}
+        """,
+        [fy_start],
+    )
+    raw["name_key"] = raw["employee_name"].map(name_key)
+    raw["time_off_hours"] = raw["pto_hours"].fillna(0) + raw["hol_hours"].fillna(0)
+    activity = raw["total_hours"].fillna(0) - raw["time_off_hours"]
+    raw["other_hours"] = np.maximum(
+        activity - raw["billable_hours"].fillna(0) - raw["credited_hours"].fillna(0),
+        raw["not_credited_hours"].fillna(0),
+    )
+    return raw
 
 
 def _load_monthly(source: str, key: str, fy_start, as_of) -> pd.DataFrame:
@@ -431,7 +452,7 @@ def _section_timekeeper_hours(fy_start: datetime.date, fy_end: datetime.date, as
                 if sub.empty:
                     continue
                 sub = sub.assign(_r=sub[sort_col].map(lambda v: status_rank.get(v, 99))).sort_values(["_r", "Timekeeper"])
-                label = {"Attorney": "Associates (attorneys)", "Planner": "Planners & Project Specialists"}.get(role, "Individual terms")
+                label = config.ROLE_LABELS.get(role, config.ROLE_LABELS["Custom"])
                 st.markdown(f"**{label}**")
                 out = sub[cols].copy()
                 # Streamlit renders NaN in a NumberColumn as the text "None";
@@ -708,6 +729,14 @@ def _hours_data_quality(sc, hours, people, leave, source, fy_start, as_of):
             issues.append(
                 f"Partial final month in the workbook with no end_date in employee_targets.csv (their "
                 f"requirements aren't prorated for leaving): {', '.join(no_end)}"
+            )
+    if source == "timekeeper_hours" and "data_error" in set(query("SELECT * FROM timekeeper_hours LIMIT 0").columns):
+        bad = query("SELECT employee_name, entity, total_hours FROM timekeeper_hours "
+                    "WHERE period_start = ? AND data_error", [fy_start])
+        if not bad.empty:
+            issues.append(
+                "**Negative hours in the Vantagepoint export -- excluded until fixed at the source:** "
+                + ", ".join(f"{r.employee_name} ({r.entity}, {r.total_hours:,.1f} total)" for r in bad.itertuples())
             )
     late = _late_starters(sc, people, source, fy_start, as_of)
     if late:
