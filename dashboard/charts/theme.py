@@ -142,3 +142,49 @@ def short_client_label(entity_abbrev: str | None, client_name: str | None, max_l
     if len(name) > max_len:
         name = name[: max_len - 1].rstrip() + "…"
     return f"{entity_abbrev}: {name}" if entity_abbrev else name
+
+
+# ---------------------------------------------------------------------------
+# Number display: whole numbers without a decimal point ("1,900", "100%"),
+# one decimal only when there is a fraction ("1,416.1", "89.3%").
+# ---------------------------------------------------------------------------
+def fmt_num(value, decimals: int = 1) -> str:
+    """1900.0 -> '1,900'; 1416.09 -> '1,416.1'; None/NaN -> '—'."""
+    try:
+        v = round(float(value), decimals)
+    except (TypeError, ValueError):
+        return "—"
+    if v != v:  # NaN
+        return "—"
+    if v == int(v):
+        return f"{int(v):,}"
+    return f"{v:,.{decimals}f}".rstrip("0").rstrip(".")
+
+
+def fmt_pct_smart(value, decimals: int = 1) -> str:
+    s = fmt_num(value, decimals)
+    return s if s == "—" else f"{s}%"
+
+
+def hours_column(label: str | None = None, help: str | None = None):
+    """st.column_config for hours: thousands separators, decimal only when
+    needed (pair with round_for_display so float noise doesn't show)."""
+    import streamlit as st
+
+    return st.column_config.NumberColumn(label, format="localized", help=help)
+
+
+def pct_column(label: str | None = None, help: str | None = None):
+    """st.column_config for percentages already on a 0-100 scale: '100%' / '89.3%'."""
+    import streamlit as st
+
+    return st.column_config.NumberColumn(label, format="%g%%", help=help)
+
+
+def round_for_display(df, decimals: int = 1):
+    """Round every float column so 'localized' / '%g' formats show at most one decimal."""
+    out = df.copy()
+    for c in out.columns:
+        if str(out[c].dtype).startswith("float"):
+            out[c] = out[c].round(decimals)
+    return out

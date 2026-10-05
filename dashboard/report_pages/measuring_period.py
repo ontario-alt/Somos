@@ -103,7 +103,7 @@ def _default_as_of() -> datetime.date:
 
 _PEOPLE_COLS = [
     "full_name", "name_key", "employee_number", "role", "start_date", "end_date",
-    "billable_target", "credit_cap", "total_target", "bonus_threshold", "staff_group",
+    "billable_target", "credit_cap", "total_target", "bonus_threshold", "staff_group", "designation",
 ]
 
 
@@ -116,7 +116,7 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
     people = None
     if table_exists("employee_targets"):
         cols = set(query("SELECT * FROM employee_targets LIMIT 0").columns)
-        if "name_key" not in cols or "staff_group" not in cols:
+        if "name_key" not in cols or "designation" not in cols:
             st.warning(
                 "The warehouse's employee_targets table is from an older version -- click "
                 "**Refresh data** (or run `python etl/build_warehouse.py`) to rebuild it."
@@ -127,7 +127,7 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
         people = query(
             """
             SELECT full_name, name_key, employee_number, target_type AS role, start_date, end_date,
-                   billable_target, credit_cap, total_target, bonus_threshold, staff_group
+                   billable_target, credit_cap, total_target, bonus_threshold, staff_group, designation
             FROM employee_targets
             WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM employee_targets)
             """

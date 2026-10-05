@@ -69,7 +69,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 _TEXT_COLUMNS = {
     "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
     "client_name_confidence", "target_type", "employee_number", "name_key", "matter_name",
-    "labor_code", "billing_status", "leave_type", "note", "sheet", "hours_category", "role_hint", "staff_group",
+    "labor_code", "billing_status", "leave_type", "note", "sheet", "hours_category", "role_hint", "staff_group", "designation",
 }
 # Optional date columns that are often entirely blank (nobody joined or
 # left mid-period, no open-ended leave) -- an all-None column would

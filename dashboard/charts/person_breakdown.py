@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import plotly.graph_objects as go
 
-from dashboard.charts.theme import CATEGORICAL, INK_MUTED, INK_PRIMARY, STATUS, apply_layout
+from dashboard.charts.theme import CATEGORICAL, INK_MUTED, INK_PRIMARY, STATUS, apply_layout, fmt_num, fmt_pct_smart
 
 # Fixed color per hour category so every chart reads the same way.
 CATEGORY_COLORS = {
@@ -137,7 +137,7 @@ def peer_strip(scorecard: pd.DataFrame, name: str, role_label: str) -> go.Figure
     fig.add_trace(go.Scatter(
         x=d.loc[is_me, "% of Expectation"], y=[0], mode="markers+text", name=name,
         marker=dict(size=18, color="#2a78d6", line=dict(color="#0d366b", width=2)),
-        text=[f"{v:.1f}%" for v in d.loc[is_me, "% of Expectation"]], textposition="top center",
+        text=[f"{fmt_pct_smart(v)}" for v in d.loc[is_me, "% of Expectation"]], textposition="top center",
         hovertemplate=name + ": %{x:.1f}%<extra></extra>"))
     fig.add_vline(x=100, line_dash="dot", line_color=INK_MUTED)
     fig = apply_layout(fig, title=f"Among {role_label} (% of Hours Expectation)", height=200, legend=False)

@@ -6,7 +6,7 @@ from __future__ import annotations
 import pandas as pd
 import plotly.graph_objects as go
 
-from dashboard.charts.theme import INK_PRIMARY, INK_MUTED, STATUS, apply_layout
+from dashboard.charts.theme import INK_PRIMARY, INK_MUTED, STATUS, apply_layout, fmt_pct_smart
 
 STATUS_COLORS = {
     "Met": STATUS["good"],
@@ -98,8 +98,12 @@ def window_zone(pct: float, lo: float, hi: float) -> str:
     return "Below 90%"
 
 
+DESIGNATION_COLOR = "#4a3aa7"  # violet -- distinct from the zone colors
+
+
 def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
-                            value_col: str = "% of Expectation", title: str | None = None) -> go.Figure:
+                            value_col: str = "% of Expectation", title: str | None = None,
+                            flagged: set | None = None) -> go.Figure:
     """Horizontal bar per timekeeper (highest at top) of `value_col`, with the
     lo-hi band drawn as a shaded, outlined region and the timekeepers inside
     it colored and labeled distinctly -- the group that may be evaluated
@@ -108,6 +112,9 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
     d["_pct"] = d[value_col].astype(float)
     d["_zone"] = d["_pct"].map(lambda v: window_zone(v, lo, hi))
     d = d.sort_values("_pct", ascending=True)  # plotly draws bottom-up -> highest on top
+    # Results that need a caveat (see the caller's caption) get a dagger.
+    d["_label"] = d["Timekeeper"] + d["Timekeeper"].map(lambda n: " †" if flagged and n in flagged else "")
+    d["_designation"] = d["Designation"].fillna("") if "Designation" in d else ""
     x_max = max(110.0, float(d["_pct"].max() or 0) + 8)
 
     fig = go.Figure()
@@ -118,16 +125,31 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
     fig.add_annotation(x=(lo + hi) / 2, y=1.0, yref="paper", yanchor="bottom", showarrow=False,
                        text=f"<b>{lo:.0f}–{hi:.0f}% window</b>", font=dict(color="#184f95", size=12))
 
+    is_flag = d["Timekeeper"].isin(flagged or set())
+    plain = d[(d["_designation"] == "") & ~is_flag]
+    prov = d[is_flag]
+    if not prov.empty:
+        fig.add_trace(
+            go.Bar(
+                y=prov["_label"], x=prov["_pct"], orientation="h", name=f"Provisional † ({len(prov)})",
+                marker=dict(color="#c3c2b7", line=dict(color="#898781", width=1)),
+                text=prov["_pct"].map(lambda v: fmt_pct_smart(v) + " †"), textposition="outside",
+                textfont=dict(color=INK_MUTED, size=11), cliponaxis=False,
+                customdata=prov[["Credited Hours", "Expectation"]].values,
+                hovertemplate="<b>%{y}</b><br>%{customdata[0]:,.1f} of %{customdata[1]:,.1f} hrs (%{x:.1f}%)"
+                              "<br>Provisional -- see note<extra></extra>",
+            )
+        )
     for zone, color in WINDOW_COLORS.items():
-        sub = d[d["_zone"] == zone]
+        sub = plain[plain["_zone"] == zone]
         if sub.empty:
             continue
         in_window = zone == "90–100% window"
         fig.add_trace(
             go.Bar(
-                y=sub["Timekeeper"], x=sub["_pct"], orientation="h", name=f"{zone} ({len(sub)})",
+                y=sub["_label"], x=sub["_pct"], orientation="h", name=f"{zone} ({len(sub)})",
                 marker=dict(color=color, line=dict(color="#0d366b" if in_window else color, width=2 if in_window else 0)),
-                text=sub["_pct"].map(lambda v: f"{v:.1f}%"), textposition="outside",
+                text=sub["_pct"].map(lambda v: f"{fmt_pct_smart(v)}"), textposition="outside",
                 textfont=dict(color="#0d366b" if in_window else INK_MUTED, size=12 if in_window else 11),
                 cliponaxis=False,
                 customdata=sub[["Credited Hours", "Expectation"]].values,
@@ -135,10 +157,24 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
                               "(%{x:.1f}%)<extra>" + zone + "</extra>",
             )
         )
+    # People with a designation (e.g. General Counsel): own color and legend
+    # entry so they read differently whatever zone they fall in.
+    for designation, sub in d[(d["_designation"] != "") & ~is_flag].groupby("_designation"):
+        fig.add_trace(
+            go.Bar(
+                y=sub["_label"], x=sub["_pct"], orientation="h", name=f"{designation} ({len(sub)})",
+                marker=dict(color=DESIGNATION_COLOR, line=dict(color="#2b1f73", width=1.5)),
+                text=sub["_pct"].map(lambda v: fmt_pct_smart(v)), textposition="outside",
+                textfont=dict(color=DESIGNATION_COLOR, size=12), cliponaxis=False,
+                customdata=sub[["Credited Hours", "Expectation", "_zone"]].values,
+                hovertemplate="<b>%{y}</b> (" + designation + ")<br>%{customdata[0]:,.1f} of %{customdata[1]:,.1f} hrs "
+                              "(%{x:.1f}%) -- %{customdata[2]}<extra></extra>",
+            )
+        )
     fig = apply_layout(fig, title=title, height=max(300, 28 * len(d) + 120))
     fig.update_layout(barmode="overlay", bargap=0.3, margin=dict(t=70 if title else 50))
     fig.update_xaxes(range=[0, x_max], ticksuffix="%", dtick=10, showgrid=True, automargin=True,
                      title_text="Credited hours, % of prorated Hours Expectation")
     # Order by value, not by which color group's trace came first.
-    fig.update_yaxes(showgrid=False, automargin=True, categoryorder="array", categoryarray=d["Timekeeper"].tolist())
+    fig.update_yaxes(showgrid=False, automargin=True, categoryorder="array", categoryarray=d["_label"].tolist())
     return fig

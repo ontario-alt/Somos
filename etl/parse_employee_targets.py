@@ -51,7 +51,7 @@ logger = logging.getLogger("somos.etl.employee_targets")
 
 _FIELDNAMES = [
     "employee_number", "full_name", "labor_type", "target_type", "start_date", "end_date",
-    "billable_target", "credit_cap", "total_target", "bonus_threshold", "staff_group",
+    "billable_target", "credit_cap", "total_target", "bonus_threshold", "staff_group", "designation",
 ]
 
 
@@ -75,6 +75,7 @@ def generate_starter(cost_rows: list[dict], path: Path | None = None) -> Path:
                     "total_target": "",
                     "bonus_threshold": "",
                     "staff_group": "",
+                    "designation": "",
                 }
             )
     logger.info(
@@ -132,6 +133,9 @@ def parse(cost_rows: list[dict] | None = None, path: Path | None = None) -> list
                     # Advisory, Owner, Contractor...) -- groups listed in
                     # config.REVIEW_EXCLUDED_STAFF_GROUPS get their own summary.
                     "staff_group": (row.get("staff_group") or "").strip() or None,
+                    # A title that sets the person apart on the hours chart (shaded
+                    # differently, own legend entry) -- e.g. "General Counsel".
+                    "designation": (row.get("designation") or "").strip() or None,
                 }
             )
     n_assigned = sum(1 for r in rows if r["target_type"])

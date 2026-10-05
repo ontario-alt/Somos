@@ -16,6 +16,7 @@ import pandas as pd
 
 import config
 from dashboard.charts.target_progress import target_progress
+from dashboard.charts.theme import fmt_num, fmt_pct_smart
 
 _ROLE_LABELS = config.ROLE_LABELS
 _STATUS_CLASS = {"Met": "good", "Eligible": "good", "Meets 90% test": "good", "On Track": "ok", "On pace": "ok",
@@ -27,9 +28,9 @@ def _fmt(v, kind: str) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return "—"
     if kind == "pct":
-        return f"{v:.0f}%"
+        return fmt_pct_smart(v)
     if kind == "hrs":
-        return f"{v:,.1f}"
+        return f"{fmt_num(v)}"
     s = html.escape(str(v))
     cls = _STATUS_CLASS.get(str(v))
     return f'<span class="pill {cls}">{s}</span>' if cls else s
@@ -54,12 +55,16 @@ def _table(df: pd.DataFrame, cols: list[tuple[str, str]], drop_empty: set[str] =
 
 def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, notes: list[str] | None = None,
                chart_fig=None, chart_title: str = "Credited hours vs. prorated Hours Expectation",
-               extra_html: str = "") -> str:
+               extra_html: str = "", appendix_html: str = "", provisional: set | None = None,
+               show_pro_bono: bool = True) -> str:
     """chart_fig replaces the default progress chart (e.g. the evaluation-
     window chart); extra_html is inserted between the chart and the
     scorecard (e.g. a table of timekeepers in the window)."""
     closed = as_of >= fy_end
-    n = len(sc)
+    provisional = provisional or set()
+    full = sc
+    sc = sc[~sc["Timekeeper"].isin(provisional)]  # headline counts exclude provisional results
+    n = len(full)
     has_total = bool(sc["Has Breakdown"].any()) if "Has Breakdown" in sc else True
     met = int((sc["Status"] == "Met").sum())
     bonus = int((sc["Bonus Status"] == "Eligible").sum())
@@ -71,7 +76,9 @@ def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, not
         ("Short" if closed else "Watch / behind", f"{short}"),
         ("Bonus eligible", f"{bonus}"),
     ]
-    if has_total:
+    if provisional:
+        kpis.append(("Provisional †", f"{len(provisional)}"))
+    elif has_total and show_pro_bono:
         kpis.append(("Pro bono hours", f"{sc['Pro Bono'].sum():,.0f}"))
     else:
         promo = int((sc.get("Promotion Lookback", pd.Series(dtype=str)) == "Meets 90% test").sum())
@@ -79,13 +86,14 @@ def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, not
     kpi_html = "".join(f'<div class="kpi"><div class="v">{v}</div><div class="l">{html.escape(l)}</div></div>' for l, v in kpis)
 
     if chart_fig is None:
-        expected_pct = sc["Expected to Date"] / sc["Expectation"].where(sc["Expectation"] > 0) * 100
-        chart_fig = target_progress(sc, expected_pct)
+        expected_pct = full["Expected to Date"] / full["Expectation"].where(full["Expectation"] > 0) * 100
+        chart_fig = target_progress(full, expected_pct)
     chart = chart_fig.to_html(full_html=False, include_plotlyjs=True, config={"displayModeBar": False})
 
     sections = []
+    full = full.assign(Timekeeper=full["Timekeeper"].map(lambda t: f"{t} †" if t in provisional else t))
     for role in [*config.BILLABLE_HOUR_TARGETS, "Custom"]:
-        sub = sc[sc["Role"] == role].sort_values("Timekeeper")
+        sub = full[full["Role"] == role].sort_values("Timekeeper")
         if sub.empty:
             continue
         sections.append(f"<h3>{_ROLE_LABELS.get(role, role)}</h3>")
@@ -144,6 +152,7 @@ td.txt, th:first-child {{ text-align: left; }}
 {extra_html}
 <h2>Scorecard</h2>
 <div class="scroll">{''.join(sections)}</div>
+{appendix_html}
 <h2>Method</h2>
 <p class="method">{html.escape(method)}</p>
 {f'<h2>Data notes</h2><ul class="method">{notes_html}</ul>' if notes_html else ''}
@@ -151,21 +160,23 @@ td.txt, th:first-child {{ text-align: left; }}
 
 
 def person_profile_html(row: pd.Series, figs: list, fy_start, fy_end, role_label: str,
-                        notes: list[str] | None = None) -> str:
+                        notes: list[str] | None = None, extra_kpis: list | None = None,
+                        extra_detail: list | None = None) -> str:
     """One-page, self-contained breakdown for a single timekeeper."""
     def kv(label, value):
         return f'<div class="kpi"><div class="v">{value}</div><div class="l">{html.escape(label)}</div></div>'
 
     def pct(v):
-        return "—" if v is None or pd.isna(v) else f"{v:.1f}%"
+        return "—" if v is None or pd.isna(v) else f"{fmt_pct_smart(v)}"
 
     kpis = "".join([
-        kv("Credited hours", f"{row['Credited Hours']:,.1f}"),
-        kv("Prorated Hours Expectation", f"{row['Expectation']:,.1f}"),
+        kv("Credited hours", f"{fmt_num(row['Credited Hours'])}"),
+        kv("Prorated Hours Expectation", f"{fmt_num(row['Expectation'])}"),
         kv("% of Expectation", pct(row["% of Expectation"])),
-        kv("Total activity", "—" if pd.isna(row.get("Total Hours")) else f"{row['Total Hours']:,.1f}"),
+        kv("Total activity", "—" if pd.isna(row.get("Total Hours")) else f"{fmt_num(row['Total Hours'])}"),
         kv("Bonus status", html.escape(str(row.get("Bonus Status") or "—"))),
         kv("2-yr average", pct(row.get("2-yr Avg %"))),
+        *[kv(label, value) for label, value in (extra_kpis or [])],
     ])
     charts = ""
     for i, f in enumerate(figs):
@@ -180,12 +191,13 @@ def person_profile_html(row: pd.Series, figs: list, fy_start, fy_end, role_label
         ("Creditable counted (cap)", row.get("Creditable NB (counted)")),
         ("Creditable cap (prorated)", row.get("Creditable Cap")),
         ("Other non-billable", row.get("Other NB")), ("PTO / holiday", row.get("Time Off")),
-        ("Bonus hours / threshold", f"{row.get('Bonus Hours', 0):,.1f} / {row.get('Bonus Threshold', float('nan')):,.1f}"),
+        *(extra_detail or []),
+        ("Bonus hours / threshold", f"{fmt_num(row.get('Bonus Hours', 0))} / {fmt_num(row.get('Bonus Threshold', float('nan')))}"),
         ("Prior period % of expectation", pct(row.get("Prior Period %"))),
         ("Promotion lookback", row.get("Promotion Lookback")),
     ]
     detail = "".join(
-        f"<tr><td class='txt'>{html.escape(k)}</td><td>{v if isinstance(v, str) else ('—' if v is None or pd.isna(v) else f'{v:,.1f}')}</td></tr>"
+        f"<tr><td class='txt'>{html.escape(k)}</td><td>{v if isinstance(v, str) else ('—' if v is None or pd.isna(v) else f'{fmt_num(v)}')}</td></tr>"
         for k, v in detail_rows)
     notes_html = "".join(f"<li>{html.escape(n)}</li>" for n in (notes or []))
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
