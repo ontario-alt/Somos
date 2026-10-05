@@ -14,7 +14,16 @@ report. One row per leave:
     Sam Sample,,6/1/2026,8/28/2026,50,Reduced schedule,3-day weeks
 
 `percent_away` is optional and defaults to 100 (fully out); 50 means a
-half-time schedule for that span. `leave_end` may be blank for a leave
+half-time schedule for that span.
+
+When only the length is known (e.g. "6 weeks of leave"), leave the dates
+blank and give `leave_weeks` (6) and `measuring_period` (FY2026): it takes
+weeks x 5 workdays off the person's available time in that period. Add
+the dates once known -- they let pace and suggestions line up by month. When only the length is known, leave
+the dates blank and put the length in `leave_weeks` (e.g. 6) -- it takes
+weeks x 5 workdays off the person's available time for the period
+containing the row's... measuring period of review (it applies to every
+period the row isn't dated for, so add dates once they're known). `leave_end` may be blank for a leave
 that's still open (treated as running through the end of the measuring
 period). Ordinary PTO and holidays do NOT belong here -- the annual
 target already assumes them. `employee_number` is optional; rows match
@@ -28,6 +37,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -38,7 +48,8 @@ from etl.common import name_key, parse_money, parse_vp_date
 
 logger = logging.getLogger("somos.etl.leave")
 
-_FIELDNAMES = ["full_name", "employee_number", "leave_start", "leave_end", "percent_away", "leave_type", "note"]
+_FIELDNAMES = ["full_name", "employee_number", "leave_start", "leave_end", "percent_away", "leave_type", "note",
+               "leave_weeks", "measuring_period"]
 
 
 def generate_starter(path: Path | None = None) -> Path:
@@ -64,12 +75,17 @@ def parse(path: Path | None = None) -> list[dict]:
         for i, row in enumerate(csv.DictReader(f), start=2):
             full_name = (row.get("full_name") or "").strip()
             leave_start = parse_vp_date(row.get("leave_start"))
-            if not full_name or leave_start is None:
+            weeks = parse_money(row.get("leave_weeks"))
+            m = re.search(r"(\d{4})", row.get("measuring_period") or "")
+            fy = int(m.group(1)) if m else None
+            if not full_name or (leave_start is None and not (weeks and fy)):
                 if any((v or "").strip() for v in row.values()):
-                    logger.warning("Skipping %s line %d: needs at least full_name and leave_start", path.name, i)
+                    logger.warning(
+                        "Skipping %s line %d: needs full_name and leave_start -- or, when only the length is "
+                        "known, leave_weeks plus measuring_period (e.g. FY2026)", path.name, i)
                 continue
             leave_end = parse_vp_date(row.get("leave_end"))
-            if leave_end is not None and leave_end < leave_start:
+            if leave_start is not None and leave_end is not None and leave_end < leave_start:
                 logger.warning("Skipping %s line %d (%s): leave_end is before leave_start", path.name, i, full_name)
                 continue
             pct = parse_money(row.get("percent_away"))
@@ -84,6 +100,10 @@ def parse(path: Path | None = None) -> list[dict]:
                     "percent_away": pct,
                     "leave_type": (row.get("leave_type") or "").strip(),
                     "note": (row.get("note") or "").strip(),
+                    # Length only, when the dates aren't to hand (e.g. "6 weeks"):
+                    # removes weeks x 5 workdays from the person's available time.
+                    "leave_weeks": weeks if leave_start is None else None,
+                    "measuring_period_end_year": fy if leave_start is None else None,
                 }
             )
     logger.info("Loaded %d approved leave row(s) from %s", len(rows), path.name)

@@ -145,9 +145,7 @@ def render():
         use_container_width=True,
     )
 
-    if source in ("labor_detail", "monthly_hours"):
-        tracked = people[people["name_key"].isin(view["name_key"])]
-        mp._person_drilldown(tracked, view, leave, fy_start, fy_end, fy_end, source)
+    _individual_breakdown(view, people, leave, source, fy_start, fy_end)
     # Excluded groups are summarized above -- not repeated as "no requirement".
     mp._hours_data_quality(sc_all, hours[~hours["name_key"].isin(off_chart)], people, leave, source, fy_start, fy_end)
     if source == "labor_detail":
@@ -155,6 +153,87 @@ def render():
 
     st.divider()
     mp._section_timekeeper_profitability(fy_start, fy_end, fy_end)
+
+
+def _individual_breakdown(view, people, leave, source, fy_start, fy_end):
+    """Per-person hours breakdown: KPIs, pie charts, requirement bullets,
+    position among peers, monthly charts (when the source has dates), and
+    a downloadable one-page profile."""
+    from dashboard.charts.person_breakdown import (
+        credited_donut, hours_donut, monthly_stack, peer_strip, requirement_bullets)
+    from dashboard.charts.target_progress import cumulative_vs_target
+
+    st.subheader("Individual breakdown")
+    names = view.sort_values("Timekeeper")["Timekeeper"].tolist()
+    name = st.selectbox("Timekeeper", names, key="period_review_person")
+    row = view[view["Timekeeper"] == name].iloc[0]
+    role_label = _role_label(row["Role"])
+    st.caption(f"{role_label} · {row['Zone']}")
+
+    c = st.columns(6)
+    c[0].metric("Credited hours", f"{row['Credited Hours']:,.1f}")
+    c[1].metric("Prorated expectation", f"{row['Expectation']:,.1f}",
+                help=f"Annual {row['Annual Expectation']:,.0f}, prorated for {row['Leave Days']:.1f} leave days / "
+                     f"employment dates. Billable needed if the full {row['Creditable Cap']:,.1f}-hour creditable "
+                     f"allowance is used: {row['Billable Needed']:,.1f}")
+    c[2].metric("% of expectation", f"{row['% of Expectation']:.1f}%",
+                delta=f"{row['Credited Hours'] - row['Expectation']:+,.1f} hrs", delta_color="normal")
+    c[3].metric("Total activity", "—" if pd.isna(row["Total Hours"]) else f"{row['Total Hours']:,.0f}",
+                help="All chargeable + non-chargeable hours, excluding PTO/holiday")
+    c[4].metric("Bonus", row["Bonus Status"] or "—")
+    c[5].metric("2-yr average", "—" if pd.isna(row.get("2-yr Avg %")) else f"{row['2-yr Avg %']:.0f}%",
+                help=str(row.get("Promotion Lookback") or ""))
+
+    st.caption(
+        f"Billable {row['Client'] + row['FOA']:,.1f} of {row['Billable Needed']:,.1f} needed "
+        f"({(row['Client'] + row['FOA']) / row['Billable Needed'] * 100:.1f}%) -- the prorated expectation less the "
+        f"full {row['Creditable Cap']:,.1f}-hour creditable allowance."
+        if row["Billable Needed"] > 0 else "")
+
+    figs = [hours_donut(row), credited_donut(row), requirement_bullets(row, config.EVALUATION_WINDOW[0]),
+            peer_strip(view[view["Role"] == row["Role"]], name, role_label)]
+    a, b = st.columns(2)
+    a.plotly_chart(figs[0], use_container_width=True, config={"displayModeBar": False})
+    b.plotly_chart(figs[1], use_container_width=True, config={"displayModeBar": False})
+    a, b = st.columns(2)
+    a.plotly_chart(figs[2], use_container_width=True, config={"displayModeBar": False})
+    b.plotly_chart(figs[3], use_container_width=True, config={"displayModeBar": False})
+
+    if source in ("labor_detail", "monthly_hours"):
+        monthly = mp._load_monthly(source, row["name_key"], fy_start, fy_end)
+        if not monthly.empty:
+            person = people[people["name_key"] == row["name_key"]].iloc[0]
+            pace = hours_credit.cumulative_pace(monthly, person, row, leave, fy_start, fy_end)
+            m1, m2 = monthly_stack(monthly), cumulative_vs_target(pace, name)
+            a, b = st.columns(2)
+            a.plotly_chart(m1, use_container_width=True, config={"displayModeBar": False})
+            b.plotly_chart(m2, use_container_width=True, config={"displayModeBar": False})
+            figs += [m1, m2]
+    else:
+        st.caption("Monthly charts need the Vantagepoint time-detail export (the summary export has full-year totals only).")
+
+    detail = pd.DataFrame({
+        "Category": ["Client (billable)", "Firm's Own Account", "Pro bono", "Creditable non-billable — counted",
+                     "Creditable non-billable — over cap", "Other non-billable", "PTO / holiday"],
+        "Hours": [row["Client"], row["FOA"], row["Pro Bono"], row["Creditable NB (counted)"],
+                  row["Creditable NB (over cap)"], row["Other NB"], row["Time Off"]],
+        "Counts toward expectation": ["Yes", "Yes", "Yes", f"Yes (cap {row['Creditable Cap']:,.1f})", "No", "Total activity only", "No"],
+    })
+    st.dataframe(detail, use_container_width=True, hide_index=True,
+                 column_config={"Hours": st.column_config.NumberColumn(format="%,.1f")})
+
+    p_leave = leave[leave["name_key"] == row["name_key"]] if not leave.empty else leave
+    notes = []
+    if not p_leave.empty:
+        notes.append("Approved leave: " + "; ".join(hours_credit.describe_leave(r) for r in p_leave.itertuples()))
+    if source != "labor_detail":
+        notes.append(f"Source: {mp._SOURCE_LABELS.get(source, source)} -- pro bono is not separated from other credited time.")
+    st.download_button(
+        f"Download {name}'s breakdown (HTML)",
+        leadership_report.person_profile_html(row, figs, fy_start, fy_end, role_label, notes).encode(),
+        file_name=f"Hours_Breakdown_{re.sub(r'[^A-Za-z0-9]+', '_', name).strip('_')}_FY{fy_end.year}.html",
+        mime="text/html",
+    )
 
 
 def _role_label(r: str) -> str:
@@ -396,8 +475,8 @@ def _window_table(view, lo, hi):
         return
     w["Hours Short of 100%"] = w["Expectation"] - w["Credited Hours"]
     w["Role"] = w["Role"].map(_role_label)
-    cols = ["Timekeeper", "Role", "Annual Expectation", "Leave Days", "Expectation", "Credited Hours",
-            "% of Expectation", "Hours Short of 100%", "Pro Bono", "Creditable NB (counted)",
+    cols = ["Timekeeper", "Role", "Annual Expectation", "Leave Days", "Expectation", "Billable Needed", "Client",
+            "Credited Hours", "% of Expectation", "Hours Short of 100%", "Pro Bono", "Creditable NB (counted)",
             "Bonus Status", "Prior Period %", "2-yr Avg %", "Promotion Lookback"]
     out = w.sort_values("% of Expectation", ascending=False)[cols]
     for c in ("Prior Period %", "2-yr Avg %"):
@@ -409,6 +488,8 @@ def _window_table(view, lo, hi):
             "Annual Expectation": st.column_config.NumberColumn(format="%,.0f"),
             "Leave Days": st.column_config.NumberColumn(format="%.1f", help="Workdays of approved leave (weighted by percent away)"),
             "Expectation": st.column_config.NumberColumn(format="%,.1f", help="Prorated for leave / partial-year employment"),
+            "Billable Needed": st.column_config.NumberColumn(format="%,.1f", help="Prorated expectation less the full prorated creditable allowance -- billable hours needed, e.g. (1,600 - 75) x 46/52 = 1,349"),
+            "Client": st.column_config.NumberColumn("Billable", format="%,.1f"),
             "Credited Hours": h1, "Pro Bono": h1, "Creditable NB (counted)": h1,
             "% of Expectation": st.column_config.NumberColumn(format="%.1f%%"),
             "Hours Short of 100%": st.column_config.NumberColumn(format="%.1f"),
@@ -419,7 +500,8 @@ def _window_table(view, lo, hi):
 # ---------------------------------------------------------------------------
 # Leave & proration
 # ---------------------------------------------------------------------------
-_LEAVE_COLS = ["full_name", "employee_number", "leave_start", "leave_end", "percent_away", "leave_type", "note"]
+_LEAVE_COLS = ["full_name", "employee_number", "leave_start", "leave_end", "leave_weeks", "measuring_period",
+               "percent_away", "leave_type", "note"]
 
 
 def _leave_panel(sc_all, people, leave, fy_start, fy_end):
@@ -477,8 +559,13 @@ def _leave_panel(sc_all, people, leave, fy_start, fy_end):
             column_config={
                 "full_name": st.column_config.SelectboxColumn("Timekeeper", options=names, required=True),
                 "employee_number": "Emp #",
-                "leave_start": st.column_config.DateColumn("Start", format="MM/DD/YYYY", required=True),
+                "leave_start": st.column_config.DateColumn("Start", format="MM/DD/YYYY"),
                 "leave_end": st.column_config.DateColumn("End (blank = still out)", format="MM/DD/YYYY"),
+                "leave_weeks": st.column_config.NumberColumn(
+                    "Weeks (if no dates)", min_value=0, step=0.5,
+                    help="When only the length is known, e.g. 6 weeks -- leave Start blank. Takes weeks x 5 workdays off."),
+                "measuring_period": st.column_config.TextColumn(
+                    "Period", help=f"For undated leave: the measuring period, e.g. FY{fy_end.year}"),
                 "percent_away": st.column_config.NumberColumn("% away", min_value=0, max_value=100, step=5, default=100),
                 "leave_type": st.column_config.SelectboxColumn(
                     "Type", options=["Parental", "Medical", "Family", "Military", "Sabbatical", "Reduced schedule", "Other"]),
@@ -487,7 +574,10 @@ def _leave_panel(sc_all, people, leave, fy_start, fy_end):
         )
         if st.button("Save leave and recalculate"):
             outside = current[~_overlaps(current, fy_start, fy_end)]
-            _write_leave_csv(pd.concat([outside, edited.dropna(subset=["full_name", "leave_start"])], ignore_index=True))
+            keep = edited.dropna(subset=["full_name"])
+            keep = keep[keep["leave_start"].notna() | keep["leave_weeks"].notna()].copy()
+            keep.loc[keep["leave_start"].isna(), "measuring_period"] = f"FY{fy_end.year}"
+            _write_leave_csv(pd.concat([outside, keep], ignore_index=True))
             _rebuild("Leave saved -- requirements recalculated.")
 
 
@@ -499,6 +589,7 @@ def _read_leave_csv() -> pd.DataFrame:
     for c in ("leave_start", "leave_end"):
         df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
     df["percent_away"] = pd.to_numeric(df["percent_away"], errors="coerce").fillna(100.0)
+    df["leave_weeks"] = pd.to_numeric(df["leave_weeks"], errors="coerce")
     return df
 
 
@@ -507,16 +598,22 @@ def _write_leave_csv(df: pd.DataFrame):
     for c in ("leave_start", "leave_end"):
         out[c] = pd.to_datetime(out[c], errors="coerce").dt.strftime("%m/%d/%Y").fillna("")
     out["percent_away"] = pd.to_numeric(out["percent_away"], errors="coerce").fillna(100).map(lambda v: f"{v:g}")
+    out["leave_weeks"] = pd.to_numeric(out["leave_weeks"], errors="coerce").map(lambda v: "" if pd.isna(v) else f"{v:g}")
     config.LEAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
     out.fillna("").to_csv(config.LEAVE_PATH, index=False)
 
 
 def _overlaps(df, fy_start, fy_end) -> pd.Series:
+    """Rows that belong to this period: dated leave overlapping it, or
+    undated leave (leave_weeks) tagged with this measuring period."""
     if df.empty:
         return pd.Series(dtype=bool)
     s = pd.to_datetime(df["leave_start"], errors="coerce")
     e = pd.to_datetime(df["leave_end"], errors="coerce").fillna(pd.Timestamp.max)
-    return (s <= pd.Timestamp(fy_end)) & (e >= pd.Timestamp(fy_start))
+    dated = (s <= pd.Timestamp(fy_end)) & (e >= pd.Timestamp(fy_start))
+    period = df["measuring_period"].fillna("").astype(str).str.extract(r"(\d{4})")[0]
+    undated = s.isna() & (period == str(fy_end.year))
+    return dated | undated
 
 
 def _suggest_leave(sc_all, people, leave, fy_start, fy_end) -> pd.DataFrame:
@@ -617,8 +714,8 @@ def _suggest_leave(sc_all, people, leave, fy_start, fy_end) -> pd.DataFrame:
 def _scorecard_tabs(view, roles):
     tabs = st.tabs(["Hours Expectation", "Total Activity", "Bonus Eligibility", "Promotion (2-yr lookback)"])
     specs = [
-        ["Timekeeper", "Annual Expectation", "Leave Days", "Expectation", "Client", "FOA", "Pro Bono",
-         "Creditable NB (logged)", "Creditable NB (counted)", "Credited Hours", "% of Expectation", "Zone"],
+        ["Timekeeper", "Annual Expectation", "Leave Days", "Expectation", "Billable Needed", "Client", "FOA",
+         "Pro Bono", "Creditable NB (logged)", "Creditable NB (counted)", "Credited Hours", "% of Expectation", "Zone"],
         ["Timekeeper", "Total Expectation", "Client", "FOA", "Pro Bono", "Creditable NB (logged)", "Other NB",
          "Time Off", "Total Hours", "Total %", "Total Status"],
         ["Timekeeper", "Bonus Threshold", "Client", "FOA", "Creditable NB (counted)", "Bonus Hours", "Bonus %",

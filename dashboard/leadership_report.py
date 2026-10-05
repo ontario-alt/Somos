@@ -148,3 +148,65 @@ td.txt, th:first-child {{ text-align: left; }}
 <p class="method">{html.escape(method)}</p>
 {f'<h2>Data notes</h2><ul class="method">{notes_html}</ul>' if notes_html else ''}
 </body></html>"""
+
+
+def person_profile_html(row: pd.Series, figs: list, fy_start, fy_end, role_label: str,
+                        notes: list[str] | None = None) -> str:
+    """One-page, self-contained breakdown for a single timekeeper."""
+    def kv(label, value):
+        return f'<div class="kpi"><div class="v">{value}</div><div class="l">{html.escape(label)}</div></div>'
+
+    def pct(v):
+        return "—" if v is None or pd.isna(v) else f"{v:.1f}%"
+
+    kpis = "".join([
+        kv("Credited hours", f"{row['Credited Hours']:,.1f}"),
+        kv("Prorated Hours Expectation", f"{row['Expectation']:,.1f}"),
+        kv("% of Expectation", pct(row["% of Expectation"])),
+        kv("Total activity", "—" if pd.isna(row.get("Total Hours")) else f"{row['Total Hours']:,.1f}"),
+        kv("Bonus status", html.escape(str(row.get("Bonus Status") or "—"))),
+        kv("2-yr average", pct(row.get("2-yr Avg %"))),
+    ])
+    charts = ""
+    for i, f in enumerate(figs):
+        charts += f'<div class="chart">{f.to_html(full_html=False, include_plotlyjs=(i == 0), config={"displayModeBar": False})}</div>'
+    detail_rows = [
+        ("Annual Hours Expectation", row.get("Annual Expectation")), ("Leave days (approved)", row.get("Leave Days")),
+        ("Prorated Hours Expectation", row.get("Expectation")),
+        ("Billable needed (with full creditable allowance)", row.get("Billable Needed")),
+        ("Client hours", row.get("Client")),
+        ("Firm's Own Account", row.get("FOA")), ("Pro bono", row.get("Pro Bono")),
+        ("Creditable non-billable logged", row.get("Creditable NB (logged)")),
+        ("Creditable counted (cap)", row.get("Creditable NB (counted)")),
+        ("Creditable cap (prorated)", row.get("Creditable Cap")),
+        ("Other non-billable", row.get("Other NB")), ("PTO / holiday", row.get("Time Off")),
+        ("Bonus hours / threshold", f"{row.get('Bonus Hours', 0):,.1f} / {row.get('Bonus Threshold', float('nan')):,.1f}"),
+        ("Prior period % of expectation", pct(row.get("Prior Period %"))),
+        ("Promotion lookback", row.get("Promotion Lookback")),
+    ]
+    detail = "".join(
+        f"<tr><td class='txt'>{html.escape(k)}</td><td>{v if isinstance(v, str) else ('—' if v is None or pd.isna(v) else f'{v:,.1f}')}</td></tr>"
+        for k, v in detail_rows)
+    notes_html = "".join(f"<li>{html.escape(n)}</li>" for n in (notes or []))
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Hours Breakdown</title>
+<style>
+body {{ font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; color:#0b0b0b; background:#fcfcfb; margin:0 auto; max-width:1100px; padding:24px 16px 48px; }}
+h1 {{ font-size:22px; margin:0 0 4px; }} h2 {{ font-size:16px; margin:28px 0 8px; }} .sub {{ color:#52514e; font-size:13px; }}
+.kpis {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:18px 0; }}
+.kpi {{ border:1px solid #e1e0d9; border-radius:8px; padding:10px 12px; background:#fff; }}
+.kpi .v {{ font-size:22px; font-weight:600; }} .kpi .l {{ color:#52514e; font-size:12px; }}
+.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:12px; }}
+.chart {{ background:#fff; border:1px solid #e1e0d9; border-radius:8px; padding:6px; }}
+table {{ border-collapse:collapse; width:100%; max-width:560px; font-size:13px; background:#fff; }}
+td {{ border-bottom:1px solid #e1e0d9; padding:6px 8px; text-align:right; }} td.txt {{ text-align:left; color:#52514e; }}
+ul {{ color:#52514e; font-size:12px; }}
+@media print {{ .chart {{ break-inside:avoid; }} }}
+</style></head><body>
+<h1>{html.escape(str(row['Timekeeper']))} — Hours Breakdown</h1>
+<div class="sub">{html.escape(role_label)} · Measuring period {fy_start:%b %-d, %Y} – {fy_end:%b %-d, %Y} · generated {datetime.date.today():%b %-d, %Y}</div>
+<div class="kpis">{kpis}</div>
+<div class="grid">{charts}</div>
+<h2>Detail</h2><table>{detail}</table>
+{f'<h2>Notes</h2><ul>{notes_html}</ul>' if notes_html else ''}
+</body></html>"""

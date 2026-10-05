@@ -72,14 +72,55 @@ def availability(period_start, period_end, start_date=None, end_date=None, leave
     return (avail * (1.0 - away)).clip(lower=0.0)
 
 
-def _leaves_for(person: pd.Series, leave: pd.DataFrame | None) -> list[tuple]:
+def _leave_rows(person: pd.Series, leave: pd.DataFrame | None) -> pd.DataFrame:
     if leave is None or leave.empty:
-        return []
+        return pd.DataFrame()
     num = str(person.get("employee_number") or "").strip()
     by_num = leave["employee_number"].fillna("").astype(str).str.strip()
     mask = (by_num == num) & (num != "")
     mask |= (by_num == "") & (leave["name_key"] == person.get("name_key"))
-    return list(leave.loc[mask, ["leave_start", "leave_end", "percent_away"]].itertuples(index=False, name=None))
+    return leave[mask]
+
+
+def _leaves_for(person: pd.Series, leave: pd.DataFrame | None) -> list[tuple]:
+    rows = _leave_rows(person, leave)
+    if rows.empty:
+        return []
+    rows = rows[rows["leave_start"].notna()]
+    return list(rows[["leave_start", "leave_end", "percent_away"]].itertuples(index=False, name=None))
+
+
+def _undated_leave_workdays(person: pd.Series, leave: pd.DataFrame | None, period_end) -> float:
+    """Workdays of leave recorded only by length (leave_weeks) for the
+    measuring period ending `period_end` -- weeks x 5, weighted by percent away."""
+    rows = _leave_rows(person, leave)
+    if rows.empty or "leave_weeks" not in rows:
+        return 0.0
+    rows = rows[rows["leave_start"].isna() & rows["leave_weeks"].notna()]
+    if "measuring_period_end_year" in rows:
+        rows = rows[rows["measuring_period_end_year"] == pd.Timestamp(period_end).year]
+    pct = rows["percent_away"].fillna(100.0) / 100.0
+    return float((rows["leave_weeks"] * 5 * pct).sum())
+
+
+def describe_leave(r) -> str:
+    """One leave row (namedtuple from employee_leave) as text."""
+    kind = getattr(r, "leave_type", None) or "Leave"
+    pct = getattr(r, "percent_away", 100) or 100
+    tail = f" at {pct:.0f}%" if pct < 100 else ""
+    if pd.isna(r.leave_start):
+        weeks = getattr(r, "leave_weeks", None)
+        return f"{kind}: {weeks:g} weeks (dates not recorded){tail}" if weeks and not pd.isna(weeks) else f"{kind}{tail}"
+    end = f"{pd.Timestamp(r.leave_end):%m/%d/%Y}" if pd.notna(r.leave_end) else "open"
+    return f"{kind} {pd.Timestamp(r.leave_start):%m/%d/%Y}–{end}{tail}"
+
+
+def _apply_undated(avail: pd.Series, days: float) -> pd.Series:
+    """Take `days` workdays off evenly across the person's available time."""
+    total = float(avail.sum())
+    if days <= 0 or total <= 0:
+        return avail
+    return avail * max(total - days, 0.0) / total
 
 
 def status_for(creditable: float, target: float, expected: float) -> str:
@@ -185,6 +226,7 @@ def build_scorecard(
             continue
         role = p.get("role") if p.get("role") in config.BILLABLE_HOUR_TARGETS else "Custom"
         avail = availability(period_start, period_end, p.get("start_date"), p.get("end_date"), _leaves_for(p, leave))
+        avail = _apply_undated(avail, _undated_leave_workdays(p, leave, period_end))
         avail_total = float(avail.sum())
         avail_elapsed = float(avail[avail.index <= as_of].sum())
         share = avail_total / period_wd if period_wd else 0.0
@@ -260,6 +302,10 @@ def build_scorecard(
                 "Remaining": remaining,
                 "Needed / Week": remaining / remaining_weeks if remaining_weeks > 0 and remaining > 0 else 0.0,
                 "Expectation Status": exp_status,
+                # The firm's way of stating the same requirement: billable hours
+                # needed if the full (prorated) creditable allowance is used,
+                # e.g. (1,600 - 75) x 46/52 = 1,349.
+                "Billable Needed": exp_target - cap,
                 "Total Hours": total_hours,
                 "Total Expectation": total_target if total_target is not None else np.nan,
                 "Total %": total_hours / total_target * 100 if total_target else np.nan,
@@ -282,7 +328,7 @@ SCORECARD_COLS = [
     "Creditable NB (logged)", "Creditable Cap", "Creditable NB (counted)", "Creditable NB (over cap)",
     "Other NB", "Time Off", "Annual Expectation", "Expectation", "Credited Hours", "Expected to Date",
     "Variance to Expected", "% of Expectation", "Pace %", "Projected", "Remaining", "Needed / Week",
-    "Expectation Status", "Total Hours", "Total Expectation", "Total %", "Total Status", "Has Breakdown", "Bonus Hours",
+    "Expectation Status", "Billable Needed", "Total Hours", "Total Expectation", "Total %", "Total Status", "Has Breakdown", "Bonus Hours",
     "Bonus Threshold", "Bonus %", "Bonus Status", "Bonus Credited Hours", "Status", "has_hours",
 ]
 
@@ -298,6 +344,7 @@ def cumulative_pace(
     avail = availability(
         period_start, period_end, person.get("start_date"), person.get("end_date"), _leaves_for(person, leave)
     )
+    avail = _apply_undated(avail, _undated_leave_workdays(person, leave, period_end))
     months = pd.date_range(period_start, period_end, freq="MS")
     m = monthly.set_index("month").reindex(months).fillna(0.0)
     for c in HOURS_COLS:

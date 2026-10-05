@@ -79,6 +79,7 @@ _DATE_COLUMNS = {"start_date", "end_date", "leave_start", "leave_end"}
 # they carry) -- forced to float so an all-blank column doesn't land as
 # INTEGER and then reject real values on a later upsert.
 _FLOAT_COLUMNS = {
+    "leave_weeks", "measuring_period_end_year",
     "standard_value", "billed_amount", "cost_amount", "billable_target", "credit_cap", "total_target", "bonus_threshold",
     "billable_requirement", "total_requirement",
 }

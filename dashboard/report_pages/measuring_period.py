@@ -169,7 +169,10 @@ def _load_people(fy_start=None, source: str | None = None) -> pd.DataFrame | Non
 def _load_leave() -> pd.DataFrame:
     if not table_exists("employee_leave"):
         return pd.DataFrame(columns=["name_key", "employee_number", "leave_start", "leave_end", "percent_away", "leave_type", "full_name"])
-    return query("SELECT name_key, employee_number, leave_start, leave_end, percent_away, leave_type, full_name FROM employee_leave")
+    cols = set(query("SELECT * FROM employee_leave LIMIT 0").columns)
+    extra = ", leave_weeks, measuring_period_end_year" if "leave_weeks" in cols else ""
+    return query("SELECT name_key, employee_number, leave_start, leave_end, percent_away, leave_type, full_name"
+                 f"{extra} FROM employee_leave")
 
 
 def _has_rows(table: str, date_col: str, lo, hi) -> bool:
@@ -212,25 +215,46 @@ _WORKBOOK_CATEGORY_SQL = """
 """
 
 
+def _employment_window(date_expr: str, table: str, month_grain: bool = False) -> tuple[str, str]:
+    """(JOIN, WHERE) SQL fragments limiting `table`'s rows to each person's
+    employment window (start_date / end_date in employee_targets.csv), so a
+    mid-period hire or role change -- e.g. a contractor who joined Group 1 --
+    is measured only on hours from that date against the prorated target.
+    Monthly sources keep a partial first / last month whole."""
+    if not table_exists("employee_targets"):
+        return "", ""
+    join = (
+        "LEFT JOIN (SELECT name_key AS wk, MAX(start_date) AS ws, MAX(end_date) AS we FROM employee_targets "
+        "WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM employee_targets) GROUP BY name_key) w "
+        f"ON w.wk = {table}.name_key"
+    )
+    first = f"({date_expr} + INTERVAL 1 MONTH - INTERVAL 1 DAY)" if month_grain else date_expr
+    where = (f" AND {first} >= COALESCE(w.ws, DATE '1900-01-01')"
+             f" AND {date_expr} <= COALESCE(w.we, DATE '2999-12-31')")
+    return join, where
+
+
 def _load_hours(fy_start, as_of, source: str) -> pd.DataFrame:
     """Per-person hours to date by policy category (hours_credit.HOURS_COLS), plus entities."""
     if source == "labor_detail":
+        join, win = _employment_window("transaction_date", "labor_detail")
         return query(
             f"""
             SELECT name_key, ANY_VALUE(employee_name) AS employee_name, {_LABOR_CATEGORY_SQL},
                    STRING_AGG(DISTINCT entity, ', ' ORDER BY entity) AS entities
-            FROM labor_detail
-            WHERE transaction_date BETWEEN ? AND ?
+            FROM labor_detail {join}
+            WHERE transaction_date BETWEEN ? AND ? {win}
             GROUP BY name_key
             """,
             [fy_start, as_of],
         )
     if source == "monthly_hours":
+        join, win = _employment_window("month", "monthly_hours", month_grain=True)
         return query(
             f"""
             SELECT name_key, ANY_VALUE(employee_name) AS employee_name, {_WORKBOOK_CATEGORY_SQL},
                    '' AS entities
-            FROM monthly_hours WHERE month BETWEEN ? AND ?
+            FROM monthly_hours {join} WHERE month BETWEEN ? AND ? {win}
             GROUP BY name_key
             """,
             [fy_start, as_of],
@@ -278,20 +302,22 @@ def _timekeeper_hours_rows(fy_start) -> pd.DataFrame:
 
 def _load_monthly(source: str, key: str, fy_start, as_of) -> pd.DataFrame:
     if source == "labor_detail":
+        join, win = _employment_window("transaction_date", "labor_detail")
         df = query(
             f"""
             SELECT DATE_TRUNC('month', transaction_date) AS month, {_LABOR_CATEGORY_SQL}
-            FROM labor_detail
-            WHERE name_key = ? AND transaction_date BETWEEN ? AND ?
+            FROM labor_detail {join}
+            WHERE labor_detail.name_key = ? AND transaction_date BETWEEN ? AND ? {win}
             GROUP BY 1 ORDER BY 1
             """,
             [key, fy_start, as_of],
         )
     elif source == "monthly_hours":
+        join, win = _employment_window("month", "monthly_hours", month_grain=True)
         df = query(
             f"""
             SELECT month, {_WORKBOOK_CATEGORY_SQL}
-            FROM monthly_hours WHERE name_key = ? AND month BETWEEN ? AND ?
+            FROM monthly_hours {join} WHERE monthly_hours.name_key = ? AND month BETWEEN ? AND ? {win}
             GROUP BY month ORDER BY month
             """,
             [key, fy_start, as_of],
@@ -672,15 +698,7 @@ def _person_drilldown(people, view, leave, fy_start, fy_end, as_of, source):
                 st.caption(f"From the workbook: {note}")
         p_leave = leave[leave["name_key"] == row["name_key"]] if not leave.empty else leave
         if not p_leave.empty:
-            st.caption(
-                "Approved leave: "
-                + "; ".join(
-                    (f"{r.leave_type or 'Leave'} {pd.Timestamp(r.leave_start):%m/%d/%Y}–{pd.Timestamp(r.leave_end):%m/%d/%Y}"
-                     if pd.notna(r.leave_end) else f"{r.leave_type or 'Leave'} from {pd.Timestamp(r.leave_start):%m/%d/%Y} (open)")
-                    + (f" at {r.percent_away:.0f}%" if r.percent_away < 100 else "")
-                    for r in p_leave.itertuples()
-                )
-            )
+            st.caption("Approved leave: " + "; ".join(hours_credit.describe_leave(r) for r in p_leave.itertuples()))
 
 
 def _hours_data_quality(sc, hours, people, leave, source, fy_start, as_of):
@@ -738,6 +756,17 @@ def _hours_data_quality(sc, hours, people, leave, source, fy_start, as_of):
                 "**Negative hours in the Vantagepoint export -- excluded until fixed at the source:** "
                 + ", ".join(f"{r.employee_name} ({r.entity}, {r.total_hours:,.1f} total)" for r in bad.itertuples())
             )
+    if source == "timekeeper_hours":
+        fy_end = config.fiscal_year_bounds(pd.Timestamp(fy_start).date())[1]
+        mid = people[people["name_key"].isin(sc["name_key"]) & (
+            (pd.to_datetime(people["start_date"]) > pd.Timestamp(fy_start))
+            | (pd.to_datetime(people["end_date"]) < pd.Timestamp(fy_end)))]
+        if not mid.empty:
+            issues.append(
+                "**Requirement prorated for a mid-period start/end, but the All Timekeepers Hours export only has "
+                "full-year totals** -- hours outside the window (e.g. time as a contractor before joining Group 1) "
+                "can't be excluded, so these results may read high. Upload the time-detail export to fix: "
+                + ", ".join(sorted(mid["full_name"].astype(str))))
     late = _late_starters(sc, people, source, fy_start, as_of)
     if late:
         issues.append(
