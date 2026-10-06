@@ -1,5 +1,9 @@
 # Somos Group Executive Dashboard
 
+> **Performance platform design:** the design package for the Somos Performance
+> review-management platform (PRD, data model, runnable Postgres schema, AI
+> architecture, roadmap) lives in [`performance-platform/`](performance-platform/README.md).
+
 Local Streamlit app that turns Vantagepoint exports into weekly / monthly /
 quarterly / fiscal-year ("measuring period") reporting, backed by a DuckDB
 warehouse so charts don't re-parse raw exports on every run.
