@@ -157,9 +157,122 @@ def _is_billable(status: str | None, has_status_col: bool) -> bool:
     return s.upper() in config.LABOR_BILLABLE_STATUS_CODES
 
 
+# ---------------------------------------------------------------------------
+# Vantagepoint "Employee Labor Detail" report, exported to CSV. It's a grouped
+# report flattened to one row per time entry, with the grouping in columns:
+#   groupHeader1_GroupColumn  "Employee: 018 Zuniga, Jonathan"
+#   groupHeader2_GroupColumn  "Matter: LLP25-099 [Pro-Bono] General Real Estate"
+#   groupHeader3/4            "Phase: ..." / "Task: ..." (optional)
+#   detail_LaborCode          B / N
+#   detail_TransDate, detail_TotalHrs, detail_TotalAmt (hours x bill rate)
+# plus repeated subtotal columns (ignored). Checked against the All
+# Timekeepers Hours export for FY2026: total hours reconcile exactly for
+# every timekeeper. That export's "Billable" = all time on client matters
+# (B or N), including client-numbered "[Pro-Bono] ..." matters; its
+# "Credited" / "Not Credited" = the firm's overhead (OH) time files; PTO /
+# holiday = the ZZZ time files. So here billable vs. not is decided by the
+# matter (client matter vs. OH / ZZZ file), and policy categories by name.
+# ---------------------------------------------------------------------------
+_VP_EMP_RE = re.compile(r"^Employee:\s*(\S+)\s+(.*)$")
+_VP_MATTER_RE = re.compile(r"^Matter:\s*(\S+)\s*(.*)$")
+# Single entries this large are bad postings, not time (seen: one person
+# with entries of -3,000 to -255,000 hours on 2/28/2026). Month-end
+# summary postings of 30-120 hours on one matter are real and kept.
+VP_ENTRY_HOURS_RANGE = config.VP_ENTRY_HOURS_RANGE
+
+
+def _is_vp_grouped(grid: list[list]) -> int | None:
+    for i, row in enumerate(grid[:10]):
+        cells = [str(c or "") for c in row]
+        if "groupHeader1_GroupColumn" in cells and "detail_TransDate" in cells:
+            return i
+    return None
+
+
+def _vp_entity(code: str, name: str) -> str | None:
+    if code.upper().startswith("ZZZ"):
+        if "mexico" in name.lower():
+            return "Somos Group Mexico"
+        for suffix, ent in (("- LLC", "Somos Group LLC"), ("- LLP", "Somos Law Group LLP")):
+            if name.strip().upper().endswith(suffix.upper()):
+                return ent
+        return None
+    m = re.match(r"^([A-Z]+?)(?:OH)?\d", code.upper())
+    return config.MATTER_CODE_ENTITY_PREFIXES.get(m.group(1)) if m else None
+
+
+def _parse_vp_grouped(grid: list[list], header_row: int, path: Path) -> tuple[list[dict], list[dict]]:
+    """(time entries, rejected entries) from the grouped Vantagepoint export."""
+    hdr = [str(c or "") for c in grid[header_row]]
+    ix = {h: i for i, h in enumerate(hdr)}
+
+    def g(row, col):
+        i = ix.get(col)
+        return row[i] if i is not None and i < len(row) else None
+
+    rows, rejected, skipped = [], [], 0
+    lo, hi = VP_ENTRY_HOURS_RANGE
+    for raw in grid[header_row + 1:]:
+        emp = _VP_EMP_RE.match(_cell_str(g(raw, "groupHeader1_GroupColumn")))
+        mat = _VP_MATTER_RE.match(_cell_str(g(raw, "groupHeader2_GroupColumn")))
+        txn_date = _cell_date(g(raw, "detail_TransDate"))
+        hours = _cell_num(g(raw, "detail_TotalHrs"))
+        if not emp or not mat or txn_date is None or not hours:
+            skipped += 1
+            continue
+        emp_no, emp_name = emp.group(1), emp.group(2).strip()
+        code, mname = mat.group(1).strip(), mat.group(2).strip()
+        flag = (_cell_str(g(raw, "detail_LaborCode")) or "").upper() or None
+        amount = _cell_num(g(raw, "detail_TotalAmt"))
+        phase = _cell_str(g(raw, "groupHeader3_GroupColumn")).replace("Phase:", "").strip() or None
+        task = _cell_str(g(raw, "groupHeader4_GroupColumn")).replace("Task:", "").strip() or None
+        base = {
+            "entity": _vp_entity(code, mname), "employee_number": emp_no, "employee_name": emp_name,
+            "name_key": name_key(emp_name), "transaction_date": txn_date, "matter_code": code,
+            "matter_name": mname, "labor_code": flag, "billing_status": flag, "hours": hours,
+            "phase": phase, "task": task,
+        }
+        if not (lo <= hours <= hi):
+            rejected.append({**base, "billed_amount": amount, "source_file": path.name,
+                             "reason": f"entry of {hours:,.2f} hours is outside {lo:,.0f} to {hi:,.0f}"})
+            continue
+        client_matter = "OH" not in code.upper() and not code.upper().startswith("ZZZ")
+        category = config.classify_time(code, mname, None, client_matter)
+        rows.append({
+            **base,
+            "hours_category": category,
+            "is_billable": category in ("client", "foa"),
+            "is_pro_bono": category == "pro_bono",
+            "is_time_off": category == "time_off",
+            # detail_TotalAmt is hours x bill rate (median ~$605/hr checked) --
+            # the billing value of the time, not what was invoiced.
+            "standard_value": amount if client_matter else None,
+            "billed_amount": None,
+            "cost_amount": None,
+            "source_file": path.name,
+        })
+    if rejected:
+        by_person: dict[str, float] = {}
+        for r in rejected:
+            by_person[r["employee_name"]] = by_person.get(r["employee_name"], 0.0) + r["hours"]
+        logger.warning("%s: %d entries rejected as bad postings (hours outside %s): %s", path.name, len(rejected),
+                       VP_ENTRY_HOURS_RANGE, {k: round(v, 1) for k, v in by_person.items()})
+    logger.info("%s: Vantagepoint grouped labor detail -- %d entries, %d non-entry rows skipped", path.name, len(rows), skipped)
+    return rows, rejected
+
+
+_LAST_REJECTED: list[dict] = []
+
+
 def _parse_one(path: Path) -> list[dict]:
     logger.info("Parsing labor detail export: %s", path)
     grid = _read_grid(path)
+    vp_hdr = _is_vp_grouped(grid)
+    if vp_hdr is not None:
+        rows, rejected = _parse_vp_grouped(grid, vp_hdr, path)
+        _LAST_REJECTED.extend(rejected)
+        _log_categories(rows, path)
+        return rows
 
     # Report title/criteria lines often precede the real header -- take
     # the first row (within the first 25) that maps every required field.
@@ -230,14 +343,21 @@ def _parse_one(path: Path) -> list[dict]:
             "billable. Add Billing Status to the export so non-billable time is excluded.",
             path.name,
         )
+    logger.info("Parsed %d time entries from %s (%d non-detail rows skipped)", len(rows), path.name, skipped)
+    _log_categories(rows, path)
+    return rows
+
+
+def _log_categories(rows: list[dict], path: Path):
     by_cat: dict[str, float] = {}
     for r in rows:
         by_cat[r["hours_category"]] = by_cat.get(r["hours_category"], 0.0) + r["hours"]
-    logger.info(
-        "Parsed %d time entries from %s (%d non-detail rows skipped). Hours by policy category: %s",
-        len(rows), path.name, skipped, {k: round(v, 1) for k, v in sorted(by_cat.items())},
-    )
-    return rows
+    logger.info("%s hours by policy category: %s", path.name, {k: round(v, 1) for k, v in sorted(by_cat.items())})
+
+
+def rejected_entries() -> list[dict]:
+    """Entries the last parse() rejected as bad postings (see VP_ENTRY_HOURS_RANGE)."""
+    return list(_LAST_REJECTED)
 
 
 def parse(paths: list[Path] | None = None) -> list[dict]:
@@ -245,6 +365,7 @@ def parse(paths: list[Path] | None = None) -> list[dict]:
     (e.g. a fresh FY-to-date pull alongside last month's), the newer file
     wins for every date it covers, so re-exporting never double-counts."""
     paths = paths if paths is not None else find_all_files(config.RAW_DATA_DIR, config.SOURCE_FILE_PATTERNS["labor_detail"])
+    _LAST_REJECTED.clear()
     if not paths:
         return []
     by_file = [(p, _parse_one(p)) for p in paths]  # oldest -> newest by mtime
@@ -254,7 +375,9 @@ def parse(paths: list[Path] | None = None) -> list[dict]:
         dates = {r["transaction_date"] for r in rows}
         out.extend(r for r in rows if r["transaction_date"] not in covered)
         covered |= dates
-    return out
+    # The grouped Vantagepoint export adds phase/task; give every row the same keys.
+    keys = list(dict.fromkeys(k for r in out for k in r))
+    return [{k: r.get(k) for k in keys} for r in out]
 
 
 def write_processed(rows: list[dict], out_path: Path | None = None) -> Path | None:

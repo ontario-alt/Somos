@@ -228,6 +228,7 @@ AGING_FLAG_THRESHOLDS = (90, 120)  # days -- weekly page flags new items crossin
 #   creditable Creditable Non-Billable (recruiting, CLE, ...)  capped at 75
 #   other      other non-billable (meetings, admin, B&C, ...)  don't count
 #   time_off   PTO / sick / holiday                     never count (firm rule)
+#   leave      leave of absence / unpaid leave          never count; prorates the requirements
 #
 # Three tests per person, each with its own annual requirement:
 #   Hours Expectation  client + FOA + pro bono + capped creditable
@@ -278,7 +279,7 @@ EVALUATION_WINDOW = (90, 100)
 # someone to confirm. Nothing is prorated until it's confirmed.
 LEAVE_OF_ABSENCE_PATTERN = (
     r"leave of absence|\bloa\b|fmla|cfra|parental|maternity|paternity|bonding|"
-    r"medical leave|disability|sabbatical|military leave|family leave"
+    r"medical leave|disability|sabbatical|military leave|family leave|unpaid leave"
 )
 LEAVE_GAP_MIN_WORKDAYS = 10
 
@@ -309,7 +310,7 @@ ROLE_LABELS = {
 # everyone billing through these entities, plus anyone whose staff_group in
 # employee_targets.csv is listed here.
 REVIEW_EXCLUDED_ENTITIES = {"Somos Group Mexico": "Somos MX"}
-REVIEW_EXCLUDED_STAFF_GROUPS = {"Administrative": "Administrative"}
+REVIEW_EXCLUDED_STAFF_GROUPS = {"Administrative": "Administrative", "Somos MX": "Somos MX"}
 
 # How each time entry is put in a policy category (classify_time()).
 # The billing system's project/file numbers have changed since the
@@ -348,7 +349,7 @@ TIME_CATEGORY_KEYWORDS = {
         r"marketing|general office|overhead"
     ),
 }
-VALID_TIME_CATEGORIES = {"client", "foa", "pro_bono", "creditable", "other", "time_off"}
+VALID_TIME_CATEGORIES = {"client", "foa", "pro_bono", "creditable", "other", "time_off", "leave"}
 
 
 def classify_time(matter_code: str | None, matter_name: str | None, labor_code: str | None,
@@ -366,7 +367,9 @@ def classify_time(matter_code: str | None, matter_name: str | None, labor_code: 
     if is_billable_status:
         return "client"
     if _re.search(LEAVE_OF_ABSENCE_PATTERN, text, _re.I):
-        return "time_off"  # leave of absence never counts (it prorates instead)
+        # Leave of absence counts toward nothing -- not activity, not PTO; once
+        # confirmed on the Leave panel it prorates the requirements instead.
+        return "leave"
     for cat in ("time_off", "foa", "creditable", "other"):
         if _re.search(TIME_CATEGORY_KEYWORDS[cat], text, _re.I):
             return cat
@@ -378,6 +381,10 @@ def classify_time(matter_code: str | None, matter_name: str | None, labor_code: 
 # time (W/X) is excluded by default -- move them in here if the firm
 # credits written-off hours toward the target.
 LABOR_BILLABLE_STATUS_CODES = {"B", "H", "F", "T"}
+
+# A single labor detail entry outside this range (hours) is treated as a bad
+# posting -- left out of every figure and listed as a data check.
+VP_ENTRY_HOURS_RANGE = (-100.0, 400.0)
 
 # Pace status bands on creditable hours vs. expected-to-date (the
 # prorated target scaled to how much of the person's available time has

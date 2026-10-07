@@ -46,7 +46,7 @@ from dashboard.charts.kpi_cards import kpi_row
 from dashboard.charts.placeholder import missing_source
 from dashboard.charts.ranked_bar import ranked_bar
 from dashboard.charts.target_progress import cumulative_vs_target, target_progress
-from dashboard.charts.theme import fmt_currency
+from dashboard.charts.theme import fmt_currency, round_for_display
 from dashboard.charts.trend_line import trend_line
 from dashboard.data import query, table_exists
 from etl.common import name_key
@@ -181,10 +181,24 @@ def _has_rows(table: str, date_col: str, lo, hi) -> bool:
     ).iloc[0]["n"] > 0
 
 
+def _labor_covers(lo, hi, min_share: float = 0.75) -> bool:
+    """Labor detail is used only when it covers most months of the period --
+    an export pulled for one year often carries a few stray entries
+    (late postings, corrections) dated in earlier years."""
+    if not _has_rows("labor_detail", "transaction_date", lo, hi):
+        return False
+    df = query(
+        "SELECT COUNT(DISTINCT date_trunc('month', transaction_date)) AS m, COUNT(*) AS n "
+        "FROM labor_detail WHERE transaction_date BETWEEN ? AND ?", [lo, hi])
+    months = (hi.year - lo.year) * 12 + hi.month - lo.month + 1
+    per_month = df.iloc[0]["n"] / max(months, 1)
+    return df.iloc[0]["m"] >= min_share * months and per_month >= 100
+
+
 def _hours_source(fy_start, as_of) -> str:
     """Best source covering this measuring period: labor detail, then the
     firm's monthly hours workbook, then the All Timekeepers Hours summary."""
-    if _has_rows("labor_detail", "transaction_date", fy_start, as_of):
+    if _labor_covers(fy_start, as_of):
         return "labor_detail"
     if _has_rows("monthly_hours", "month", fy_start, as_of):
         return "monthly_hours"
@@ -605,6 +619,7 @@ _CATEGORY_LABELS = {
     "foa": "Firm's Own Account (counts)", "pro_bono": "Pro bono (counts in full)",
     "creditable": "Creditable non-billable (capped)", "other": "Other non-billable (Total Activity only)",
     "time_off": "PTO / sick / holiday (never counts)",
+    "leave": "Leave of absence (counts toward nothing; prorates once confirmed)",
 }
 
 
@@ -727,6 +742,18 @@ def _hours_data_quality(sc, hours, people, leave, source, fy_start, as_of):
                 + ", ".join(f"{r.employee_name} ({r.client_hours:,.0f} client hrs)"
                             for r in untracked.sort_values("employee_name").itertuples())
             )
+    if source == "labor_detail" and table_exists("labor_rejected"):
+        rej = query(
+            "SELECT employee_name, COUNT(*) AS n, SUM(hours) AS hrs, MIN(transaction_date) AS d "
+            "FROM labor_rejected WHERE transaction_date BETWEEN ? AND ? GROUP BY 1", [fy_start, as_of])
+        if not rej.empty:
+            issues.append(
+                "**Time entries left out as bad postings** (a single entry outside "
+                f"{config.VP_ENTRY_HOURS_RANGE[0]:,.0f} to {config.VP_ENTRY_HOURS_RANGE[1]:,.0f} hours -- "
+                "correct them in Vantagepoint): "
+                + ", ".join(f"{r.employee_name}: {r.n} entries totaling {r.hrs:,.0f} hrs (first dated {r.d:%m/%d/%Y})"
+                            for r in rej.itertuples())
+            )
     over = sc[sc["Creditable NB (over cap)"] > 0]
     if not over.empty:
         issues.append(
@@ -799,7 +826,7 @@ def _timekeeper_economics(fy_start, as_of) -> tuple[pd.DataFrame, str, str] | No
         """
         SELECT name_key,
                ANY_VALUE(employee_name) AS employee_name,
-               SUM(CASE WHEN NOT is_time_off THEN hours ELSE 0 END) AS total_hours,
+               SUM(CASE WHEN hours_category NOT IN ('time_off', 'leave') THEN hours ELSE 0 END) AS total_hours,
                SUM(CASE WHEN is_billable THEN hours ELSE 0 END) AS billable_hours,
                SUM(CASE WHEN is_pro_bono THEN hours ELSE 0 END) AS pro_bono_hours,
                SUM(standard_value) AS standard_value,
@@ -893,6 +920,36 @@ def _margin_band(v) -> str:
     return "Healthy" if v >= healthy else "Marginal" if v >= marginal else "Unprofitable"
 
 
+def _revenue_only(df: pd.DataFrame, revenue_basis: str):
+    """Billing value without cost data -- margins need a cost source, so
+    none are shown rather than a misleading 100%."""
+    bill = df["billable_hours"].sum()
+    kpi_row([
+        {"label": "Billing value of client time", "value": fmt_currency(df["revenue"].sum(), short=True),
+         "help": f"Basis: {revenue_basis}."},
+        {"label": "Client billable hours", "value": f"{bill:,.0f}"},
+        {"label": "Average value / billable hr", "value": fmt_currency(df["revenue"].sum() / bill) if bill else "--"},
+    ])
+    st.info(
+        "**Margin needs cost data.** This export carries hours and billing value only. To show margin, add "
+        "Vantagepoint's **Employee Cost Rate Details** export (hourly cost rate or monthly salary per "
+        "employee) to the raw data folder -- cost is then hours × cost rate (or salary for the months "
+        f"employed), and loaded cost adds the firm's {config.LABOR_BURDEN_RATE:.1%} burden. Billing value is "
+        "before write-downs; a billed/collected amount (Billing Extension / Billed Amount columns, or the "
+        "AR / invoice register) would turn it into realized revenue."
+    )
+    d = df.assign(revenue_per_hr=df["revenue"] / df["billable_hours"].where(df["billable_hours"] > 0))
+    d = d[d["revenue"] > 0].sort_values("revenue", ascending=False)
+    cols = {"employee_name": "Timekeeper", "role": "Role", "total_hours": "Hours Worked",
+            "billable_hours": "Client Hours", "pro_bono_hours": "Pro Bono Hours",
+            "revenue": "Billing Value", "revenue_per_hr": "Value / Client Hr"}
+    money = st.column_config.NumberColumn(format="$%,.0f")
+    hrs = st.column_config.NumberColumn(format="localized")
+    st.dataframe(round_for_display(d[list(cols)].rename(columns=cols)), use_container_width=True, hide_index=True,
+                 column_config={"Billing Value": money, "Value / Client Hr": money,
+                                **{c: hrs for c in ["Hours Worked", "Client Hours", "Pro Bono Hours"]}})
+
+
 def _section_timekeeper_profitability(fy_start, fy_end, as_of):
     st.subheader("Timekeeper Profitability")
     econ = _timekeeper_economics(fy_start, as_of)
@@ -910,6 +967,9 @@ def _section_timekeeper_profitability(fy_start, fy_end, as_of):
     loaded = df["loaded_cost"].sum(skipna=True)
     has_cost = df["cost"].notna()
     bill_hrs_costed = df.loc[has_cost, "billable_hours"].sum()
+    if not has_cost.any():
+        _revenue_only(df, revenue_basis)
+        return
     kpi_row(
         [
             {"label": "Revenue", "value": fmt_currency(tot_rev, short=True), "help": f"Basis: {revenue_basis}."},

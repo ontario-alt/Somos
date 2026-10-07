@@ -269,7 +269,14 @@ def build(snapshot_date: date | None = None) -> Path:
     # FY-to-date export replaces exactly the dates it covers.
     labor_rows = parse_labor_detail.parse()
     parse_labor_detail.write_processed(labor_rows)
+    # Every export is re-read each run (newest wins per date), so rebuilt.
+    if labor_rows:
+        con.execute("DROP TABLE IF EXISTS labor_detail")
     _create_table(con, "labor_detail", labor_rows, snapshot_date, snapshot_date_col="transaction_date")
+    # Entries rejected as bad postings (e.g. -255,000 hours) -- shown as a data check.
+    con.execute("DROP TABLE IF EXISTS labor_rejected")
+    _create_table(con, "labor_rejected", parse_labor_detail.rejected_entries(), snapshot_date,
+                  snapshot_date_col="transaction_date")
 
     # --- Firm's monthly hours workbook (closed measuring periods) ----------
     # The Billing Hours Analysis workbook's billable-only monthly tabs only

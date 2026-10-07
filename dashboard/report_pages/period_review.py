@@ -169,7 +169,9 @@ def render():
 
     _individual_breakdown(view, people, leave, source, fy_start, fy_end)
     # Excluded groups are summarized above -- not repeated as "no requirement".
-    mp._hours_data_quality(sc_all, hours[~hours["name_key"].isin(off_chart)], people, leave, source, fy_start, fy_end)
+    # Departed timekeepers are scored (appendix), so they count as tracked here.
+    mp._hours_data_quality(pd.concat([sc_all, departed.drop(columns=["Last Day"])], ignore_index=True),
+                           hours[~hours["name_key"].isin(off_chart)], people, leave, source, fy_start, fy_end)
     if source == "labor_detail":
         mp._classification_review(fy_start, fy_end)
 
@@ -536,7 +538,9 @@ def _excluded_people(people, hours, fy_start, source) -> tuple[pd.DataFrame, set
             label = config.REVIEW_EXCLUDED_STAFF_GROUPS.get(part.strip())
             if label and label not in out:
                 out.append(label)
-        for ent, label in config.REVIEW_EXCLUDED_ENTITIES.items():
+        # The labor detail's entity comes from the matter, not the employee's
+        # company, so there Somos MX staff are identified by staff_group only.
+        for ent, label in (config.REVIEW_EXCLUDED_ENTITIES.items() if source != "labor_detail" else ()):
             if ent in str(r["entity"] or "") and label not in out:
                 out.append(label)
         return out
