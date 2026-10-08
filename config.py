@@ -339,7 +339,7 @@ TIME_CATEGORY_KEYWORDS = {
     "foa": r"firm'?s own account|\bfoa\b",
     "creditable": (
         r"recruit|interview|summer associate|\bpgl\b|practice group lead|team work|industry team|"
-        r"\bcle\b|\bmcle\b|continuing legal education|client development|business development|"
+        r"\bcle\b|\bmcle\b|continuing legal education|client development|business development|biz[\s\-]*dev|"
         r"internal education|training|career development|mentor|professional development|"
         r"non[\s\-]*legal pro[\s\-]*bono|bar activit|judicial committee|diversity|inclusion|\bd&i\b|"
         r"\bdei\b|innovation"
