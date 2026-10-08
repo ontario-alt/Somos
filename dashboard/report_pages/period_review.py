@@ -87,20 +87,35 @@ def render():
     departed = sc[sc["name_key"].isin(departed_keys)].assign(**{"Last Day": sc["name_key"].map(ends)})
     sc = sc[~sc["name_key"].isin(departed_keys)]
     sc_all, sc = sc, sc[sc["has_hours"]].copy()
+    show_departed = st.toggle(
+        "Include departed timekeepers", value=True,
+        help="On: everyone with an hours requirement in the period, current and departed, throughout the page "
+             "and the leadership report (departed bars are hatched and labeled with their last day; their "
+             "requirements are prorated to it). Off: current timekeepers only, departed in an appendix.")
+    sc["Employment"] = "Current"
+    if show_departed:
+        gone = departed[departed["has_hours"]].copy()
+        gone["Employment"] = "Left " + pd.to_datetime(gone["Last Day"]).dt.strftime("%-m/%-d/%Y")
+        sc = pd.concat([sc, gone.drop(columns=["Last Day"])], ignore_index=True)
+        departed = departed[~departed["has_hours"]]  # only those with no hours stay in the appendix
     leave = mp._load_leave()
     flagged = _flag_unwindowed(sc, people, source, fy_start)
 
     _coverage_note(source, fy_start, fy_end)
 
     # Headline -- provisional (flagged) results aren't counted as met / eligible.
+    n_gone = int((sc["Employment"] != "Current").sum())
     firm = sc[~sc["Timekeeper"].isin(flagged)]
     zones = firm["Zone"].value_counts()
     kpi_row(
         [
             {"label": "Timekeepers reviewed", "value": f"{len(sc)}",
-             "delta": f"{len(flagged)} provisional" if flagged else None, "delta_color": "off",
-             "help": "Everyone with an hours requirement and hours in the period (departed timekeepers are in the "
-                     "appendix). Provisional (†) results aren't counted in the other boxes."},
+             "delta": ", ".join(x for x in [f"{n_gone} departed" if n_gone else "",
+                                            f"{len(flagged)} provisional" if flagged else ""] if x) or None,
+             "delta_color": "off",
+             "help": "Everyone with an hours requirement and hours in the period"
+                     + (", current and departed" if show_departed else " (departed timekeepers are in the appendix)")
+                     + ". Provisional (†) results aren't counted in the other boxes."},
             {"label": "Met (100%+)", "value": f"{zones.get('Met (100%+)', 0)}"},
             {"label": f"In {lo:.0f}–{hi:.0f}% window", "value": f"{zones.get('90–100% window', 0)}",
              "help": "Credited hours at 90% to just under 100% of their prorated Hours Expectation."},
@@ -119,13 +134,16 @@ def render():
         return
 
     st.subheader("Hours vs. prorated Hours Expectation")
-    st.plotly_chart(evaluation_window_chart(view, lo, hi, flagged=flagged), use_container_width=True,
+    st.plotly_chart(evaluation_window_chart(view, lo, hi, flagged=flagged, departed=_departed_labels(view)),
+                    use_container_width=True,
                     config={"displayModeBar": False})
     st.caption(
         f"Each bar is credited hours (client + Firm's Own Account + pro bono + creditable non-billable "
         f"up to the {config.CREDITABLE_NB_CAP}-hour cap) as a % of the person's Hours Expectation "
         f"prorated for approved leave and partial-year employment. The shaded band marks the "
         f"{lo:.0f}–{hi:.0f}% evaluation window. Violet bars mark a designated role (e.g. General Counsel)."
+        + (" Hatched bars are departed timekeepers, measured against the requirement prorated to their last day."
+           if (view["Employment"] != "Current").any() else "")
         + (f" † {', '.join(sorted(flagged))}: requirement prorated from a mid-period start, but the summary "
            "export's full-year hours include time before that date (e.g. as a contractor), so this reads high "
            "-- the time-detail export fixes it." if flagged else "")
@@ -150,7 +168,7 @@ def render():
         "Download leadership report (HTML)",
         leadership_report.build_html(
             view, fy_start, fy_end, fy_end, mp._SOURCE_LABELS.get(source, source), notes,
-            chart_fig=evaluation_window_chart(view, lo, hi, flagged=flagged),
+            chart_fig=evaluation_window_chart(view, lo, hi, flagged=flagged, departed=_departed_labels(view)),
             chart_title=f"Hours vs. prorated Hours Expectation — {lo:.0f}–{hi:.0f}% evaluation window",
             extra_html=window_html, appendix_html=_appendix_html(departed),
             provisional=flagged, show_pro_bono=(source == "labor_detail"),
@@ -170,7 +188,8 @@ def render():
     _individual_breakdown(view, people, leave, source, fy_start, fy_end)
     # Excluded groups are summarized above -- not repeated as "no requirement".
     # Departed timekeepers are scored (appendix), so they count as tracked here.
-    mp._hours_data_quality(pd.concat([sc_all, departed.drop(columns=["Last Day"])], ignore_index=True),
+    mp._hours_data_quality(pd.concat([sc, sc_all, departed.drop(columns=["Last Day"])], ignore_index=True)
+                           .drop_duplicates("name_key"),
                            hours[~hours["name_key"].isin(off_chart)], people, leave, source, fy_start, fy_end)
     if source == "labor_detail":
         mp._classification_review(fy_start, fy_end)
@@ -178,6 +197,12 @@ def render():
     st.divider()
     mp._section_timekeeper_profitability(fy_start, fy_end, fy_end)
     _appendix(departed, fy_start, fy_end)
+
+
+def _departed_labels(view: pd.DataFrame) -> dict:
+    """Timekeeper -> 'left 5/15/2026' for departed people in the view."""
+    d = view[view["Employment"] != "Current"]
+    return dict(zip(d["Timekeeper"], d["Employment"].str.replace("Left", "left", regex=False)))
 
 
 _APPENDIX_COLS = ["Timekeeper", "Role", "Last Day", "Annual Expectation", "Expectation", "Billable Needed",
@@ -247,7 +272,8 @@ def _individual_breakdown(view, people, leave, source, fy_start, fy_end):
     name = st.selectbox("Timekeeper", names, key="period_review_person")
     row = view[view["Timekeeper"] == name].iloc[0]
     role_label = _role_label(row["Role"])
-    st.caption(f"{role_label} · {row['Zone']}")
+    st.caption(f"{role_label} · {row['Zone']}"
+               + (f" · {row['Employment']} (requirement prorated to last day)" if row.get("Employment", "Current") != "Current" else ""))
 
     pto, hol = _pto_holiday(row, source, fy_start)
     total_all = float(hours_credit_total(row))
@@ -610,7 +636,7 @@ def _window_table(view, lo, hi):
         return
     w["Hours Short of 100%"] = w["Expectation"] - w["Credited Hours"]
     w["Role"] = w["Role"].map(_role_label)
-    cols = ["Timekeeper", "Role", "Annual Expectation", "Leave Days", "Expectation", "Billable Needed", "Client",
+    cols = ["Timekeeper", "Employment", "Role", "Annual Expectation", "Leave Days", "Expectation", "Billable Needed", "Client",
             "Credited Hours", "% of Expectation", "Hours Short of 100%", "Pro Bono", "Creditable NB (counted)",
             "Bonus Status", "Prior Period %", "2-yr Avg %", "Promotion Lookback"]
     out = w.sort_values("% of Expectation", ascending=False)[cols]
@@ -865,6 +891,8 @@ def _scorecard_tabs(view, roles):
          "Pro Bono", "Bonus Credited Hours", "Bonus Status"],
         ["Timekeeper", "% of Expectation", "Prior Period %", "2-yr Avg %", "Promotion Lookback"],
     ]
+    if (view["Employment"] != "Current").any():
+        specs = [[x for c in spec for x in ([c, "Employment"] if c == "Timekeeper" else [c])] for spec in specs]
     for tab, cols in zip(tabs, specs):
         with tab:
             for role in roles:
@@ -875,7 +903,7 @@ def _scorecard_tabs(view, roles):
                 out = sub[cols].copy()
                 cfg = {}
                 for c in cols:
-                    if c in ("Timekeeper", "Zone", "Promotion Lookback") or c.endswith("Status"):
+                    if c in ("Timekeeper", "Employment", "Zone", "Promotion Lookback") or c.endswith("Status"):
                         continue
                     if out[c].isna().any():
                         out[c] = out[c].map(lambda v, pct=c.endswith("%"): "—" if pd.isna(v) else (fmt_pct_smart(v) if pct else fmt_num(v)))
@@ -900,5 +928,9 @@ def _report_notes(source, sc, leave, flagged: set | None = None) -> list[str]:
     notes.append(
         f"{n_leave} timekeeper(s) had approved leave; their requirements (and the creditable cap) are prorated by available workdays."
         if n_leave else "No approved leave is recorded for this period; requirements are prorated only for mid-period start or end dates.")
+    gone = sc[sc["Employment"] != "Current"] if "Employment" in sc else sc.iloc[0:0]
+    if not gone.empty:
+        notes.append("Departed timekeepers are included, measured against requirements prorated to their last day: "
+                     + ", ".join(f"{r.Timekeeper} ({r.Employment.lower()})" for r in gone.sort_values("Timekeeper").itertuples()) + ".")
     notes.append("Owners, contractors, advisory and administrative staff have no hourly requirement and are not shown.")
     return notes

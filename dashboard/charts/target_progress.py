@@ -103,7 +103,7 @@ DESIGNATION_COLOR = "#4a3aa7"  # violet -- distinct from the zone colors
 
 def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
                             value_col: str = "% of Expectation", title: str | None = None,
-                            flagged: set | None = None) -> go.Figure:
+                            flagged: set | None = None, departed: dict | None = None) -> go.Figure:
     """Horizontal bar per timekeeper (highest at top) of `value_col`, with the
     lo-hi band drawn as a shaded, outlined region and the timekeepers inside
     it colored and labeled distinctly -- the group that may be evaluated
@@ -114,6 +114,10 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
     d = d.sort_values("_pct", ascending=True)  # plotly draws bottom-up -> highest on top
     # Results that need a caveat (see the caller's caption) get a dagger.
     d["_label"] = d["Timekeeper"] + d["Timekeeper"].map(lambda n: " †" if flagged and n in flagged else "")
+    # Departed timekeepers: labeled with their last day, bars hatched.
+    departed = departed or {}
+    d["_label"] = d["_label"] + d["Timekeeper"].map(lambda n: f" ({departed[n]})" if n in departed else "")
+    d["_hatch"] = d["Timekeeper"].map(lambda n: "/" if n in departed else "")
     d["_designation"] = d["Designation"].fillna("") if "Designation" in d else ""
     x_max = max(110.0, float(d["_pct"].max() or 0) + 8)
 
@@ -148,7 +152,8 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
         fig.add_trace(
             go.Bar(
                 y=sub["_label"], x=sub["_pct"], orientation="h", name=f"{zone} ({len(sub)})",
-                marker=dict(color=color, line=dict(color="#0d366b" if in_window else color, width=2 if in_window else 0)),
+                marker=dict(color=color, line=dict(color="#0d366b" if in_window else color, width=2 if in_window else 0),
+                            pattern=dict(shape=sub["_hatch"].tolist(), fgcolor="#ffffff", fgopacity=0.55, size=7, fillmode="overlay")),
                 text=sub["_pct"].map(lambda v: f"{fmt_pct_smart(v)}"), textposition="outside",
                 textfont=dict(color="#0d366b" if in_window else INK_MUTED, size=12 if in_window else 11),
                 cliponaxis=False,
@@ -163,7 +168,8 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
         fig.add_trace(
             go.Bar(
                 y=sub["_label"], x=sub["_pct"], orientation="h", name=f"{designation} ({len(sub)})",
-                marker=dict(color=DESIGNATION_COLOR, line=dict(color="#2b1f73", width=1.5)),
+                marker=dict(color=DESIGNATION_COLOR, line=dict(color="#2b1f73", width=1.5),
+                            pattern=dict(shape=sub["_hatch"].tolist(), fgcolor="#ffffff", fgopacity=0.55, size=7, fillmode="overlay")),
                 text=sub["_pct"].map(lambda v: fmt_pct_smart(v)), textposition="outside",
                 textfont=dict(color=DESIGNATION_COLOR, size=12), cliponaxis=False,
                 customdata=sub[["Credited Hours", "Expectation", "_zone"]].values,
