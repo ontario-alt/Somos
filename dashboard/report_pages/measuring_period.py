@@ -742,10 +742,14 @@ def _hours_data_quality(sc, hours, people, leave, source, fy_start, as_of):
                 + ", ".join(f"{r.employee_name} ({r.client_hours:,.0f} client hrs)"
                             for r in untracked.sort_values("employee_name").itertuples())
             )
+    flagged = pd.DataFrame()
     if source == "labor_detail" and table_exists("labor_rejected"):
-        rej = query(
-            "SELECT employee_name, COUNT(*) AS n, SUM(hours) AS hrs, MIN(transaction_date) AS d "
-            "FROM labor_rejected WHERE transaction_date BETWEEN ? AND ? GROUP BY 1", [fy_start, as_of])
+        flagged = query(
+            "SELECT employee_name, transaction_date, matter_code, matter_name, phase, labor_code, hours "
+            "FROM labor_rejected WHERE transaction_date BETWEEN ? AND ? ORDER BY employee_name, hours",
+            [fy_start, as_of])
+        rej = flagged.groupby("employee_name", as_index=False).agg(
+            n=("hours", "size"), hrs=("hours", "sum"), d=("transaction_date", "min"))
         if not rej.empty:
             issues.append(
                 "**Time entries left out as bad postings** (a single entry outside "
@@ -812,6 +816,29 @@ def _hours_data_quality(sc, hours, people, leave, source, fy_start, as_of):
         with st.expander(f"Data checks ({len(issues)})", expanded=False):
             for i in issues:
                 st.markdown(f"- {i}")
+    if not flagged.empty:
+        _flagged_entries(flagged)
+
+
+def _flagged_entries(flagged: pd.DataFrame):
+    """Time entries rejected as bad postings, listed one by one so they can
+    be found and corrected in Vantagepoint. They're excluded from every
+    figure on the page."""
+    who = ", ".join(sorted(flagged["employee_name"].unique()))
+    st.warning(
+        f"**{len(flagged)} flagged time entries excluded** ({who}): each is outside the "
+        f"{config.VP_ENTRY_HOURS_RANGE[0]:,.0f} to {config.VP_ENTRY_HOURS_RANGE[1]:,.0f} hours a single entry "
+        f"can plausibly carry, totaling {flagged['hours'].sum():,.0f} hours. Correct or reverse them in "
+        "Vantagepoint and re-export; until then they're left out of every figure here."
+    )
+    st.dataframe(
+        flagged.rename(columns={
+            "employee_name": "Timekeeper", "transaction_date": "Date", "matter_code": "Matter #",
+            "matter_name": "Matter", "phase": "Phase", "labor_code": "B/N", "hours": "Hours"}),
+        use_container_width=True, hide_index=True,
+        column_config={"Hours": st.column_config.NumberColumn(format="%,.2f"),
+                       "Date": st.column_config.DateColumn(format="MM/DD/YYYY")},
+    )
 
 
 # ---------------------------------------------------------------------------

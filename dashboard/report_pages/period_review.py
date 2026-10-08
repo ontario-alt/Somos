@@ -764,10 +764,18 @@ def _suggest_leave(sc_all, people, leave, fy_start, fy_end) -> pd.DataFrame:
     who = people[people["name_key"].isin(keys)].set_index("name_key")
     out = []
 
-    def covered(key, s, e) -> bool:
+    def covered(key, s, e, loa: bool = False) -> bool:
         if leave is None or leave.empty:
             return False
         lv = leave[leave["name_key"] == key]
+        # Leave recorded by length only (leave_weeks, like Ricky's) covers the
+        # person's leave-of-absence entries for that measuring period.
+        undated = lv[lv["leave_start"].isna() & lv["leave_weeks"].notna()] if "leave_weeks" in lv else lv.iloc[0:0]
+        if "measuring_period_end_year" in undated:
+            undated = undated[undated["measuring_period_end_year"] == fy_end.year]
+        if loa and not undated.empty:
+            return True
+        lv = lv[lv["leave_start"].notna()]
         for r in lv.itertuples():
             ls, le = pd.Timestamp(r.leave_start), pd.Timestamp(r.leave_end) if pd.notna(r.leave_end) else pd.Timestamp(fy_end)
             if ls <= e and le >= s:
@@ -789,7 +797,7 @@ def _suggest_leave(sc_all, people, leave, fy_start, fy_end) -> pd.DataFrame:
             span_start, prev = g["d"].iloc[0], g["d"].iloc[0]
             for d in list(g["d"].iloc[1:]) + [None]:
                 if d is None or len(pd.bdate_range(prev, d)) > 4:
-                    if not covered(key, span_start, prev):
+                    if not covered(key, span_start, prev, loa=True):
                         days = g[(g["d"] >= span_start) & (g["d"] <= prev)]
                         pct = min(100.0, round(days["h"].sum() / max(len(pd.bdate_range(span_start, prev)), 1) / 8 * 100 / 5) * 5)
                         out.append((who.loc[key, "full_name"], span_start.date(), prev.date(), pct or 100.0,
