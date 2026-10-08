@@ -81,10 +81,13 @@ def cumulative_vs_target(pace: pd.DataFrame, name: str) -> go.Figure:
     return fig
 
 
+# One blue ramp, light -> dark with attainment (validated as an ordinal
+# ramp): calmer than traffic-light colors, and the window still stands out
+# by its outline and the shaded band.
 WINDOW_COLORS = {
-    "Met (100%+)": STATUS["good"],
+    "Met (100%+)": "#184f95",
     "90–100% window": "#2a78d6",
-    "Below 90%": "#d9a3a3",
+    "Below 90%": "#86b6ef",
 }
 
 
@@ -98,7 +101,8 @@ def window_zone(pct: float, lo: float, hi: float) -> str:
     return "Below 90%"
 
 
-DESIGNATION_COLOR = "#4a3aa7"  # violet -- distinct from the zone colors
+DESIGNATION_COLOR = "#9085e9"  # soft violet -- distinct from the blue zone ramp
+DESIGNATION_EDGE = "#4a3aa7"
 
 
 def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
@@ -123,9 +127,9 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
 
     fig = go.Figure()
     # The window: shaded band with solid edges, labeled at the top.
-    fig.add_vrect(x0=lo, x1=hi, fillcolor="#2a78d6", opacity=0.10, layer="below", line_width=0)
+    fig.add_vrect(x0=lo, x1=hi, fillcolor="#2a78d6", opacity=0.08, layer="below", line_width=0)
     for x in (lo, hi):
-        fig.add_vline(x=x, line_color="#184f95", line_width=2, layer="below")
+        fig.add_vline(x=x, line_color="#184f95", line_width=1.5, line_dash="dot", layer="below")
     fig.add_annotation(x=(lo + hi) / 2, y=1.0, yref="paper", yanchor="bottom", showarrow=False,
                        text=f"<b>{lo:.0f}–{hi:.0f}% window</b>", font=dict(color="#184f95", size=12))
 
@@ -155,7 +159,8 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
                 marker=dict(color=color, line=dict(color="#0d366b" if in_window else color, width=2 if in_window else 0),
                             pattern=dict(shape=sub["_hatch"].tolist(), fgcolor="#ffffff", fgopacity=0.55, size=7, fillmode="overlay")),
                 text=sub["_pct"].map(lambda v: f"{fmt_pct_smart(v)}"), textposition="outside",
-                textfont=dict(color="#0d366b" if in_window else INK_MUTED, size=12 if in_window else 11),
+                textfont=dict(color="#0d366b" if in_window else INK_MUTED, size=12 if in_window else 11,
+                              weight=600 if in_window else 400),
                 cliponaxis=False,
                 customdata=sub[["Credited Hours", "Expectation"]].values,
                 hovertemplate="<b>%{y}</b><br>%{customdata[0]:,.1f} of %{customdata[1]:,.1f} hrs "
@@ -168,10 +173,10 @@ def evaluation_window_chart(df: pd.DataFrame, lo: float = 90, hi: float = 100,
         fig.add_trace(
             go.Bar(
                 y=sub["_label"], x=sub["_pct"], orientation="h", name=f"{designation} ({len(sub)})",
-                marker=dict(color=DESIGNATION_COLOR, line=dict(color="#2b1f73", width=1.5),
+                marker=dict(color=DESIGNATION_COLOR, line=dict(color=DESIGNATION_EDGE, width=1.5),
                             pattern=dict(shape=sub["_hatch"].tolist(), fgcolor="#ffffff", fgopacity=0.55, size=7, fillmode="overlay")),
                 text=sub["_pct"].map(lambda v: fmt_pct_smart(v)), textposition="outside",
-                textfont=dict(color=DESIGNATION_COLOR, size=12), cliponaxis=False,
+                textfont=dict(color=DESIGNATION_EDGE, size=12), cliponaxis=False,
                 customdata=sub[["Credited Hours", "Expectation", "_zone"]].values,
                 hovertemplate="<b>%{y}</b> (" + designation + ")<br>%{customdata[0]:,.1f} of %{customdata[1]:,.1f} hrs "
                               "(%{x:.1f}%) -- %{customdata[2]}<extra></extra>",

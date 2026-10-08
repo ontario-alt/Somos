@@ -36,7 +36,7 @@ import streamlit as st
 import config
 from dashboard import hours_credit, leadership_report
 from dashboard.charts.kpi_cards import kpi_row
-from dashboard.charts.theme import fmt_num, fmt_pct_smart, round_for_display
+from dashboard.charts.theme import fmt_currency, fmt_num, fmt_pct_smart, round_for_display
 from dashboard.charts.target_progress import evaluation_window_chart, window_zone
 from dashboard.data import query, table_exists
 from dashboard.report_pages import measuring_period as mp
@@ -104,13 +104,15 @@ def render():
     _coverage_note(source, fy_start, fy_end)
 
     # Headline -- provisional (flagged) results aren't counted as met / eligible.
+    # Departed timekeepers are a separate group: shown, but not in the headline counts.
     n_gone = int((sc["Employment"] != "Current").sum())
-    firm = sc[~sc["Timekeeper"].isin(flagged)]
+    cur = sc[sc["Employment"] == "Current"]
+    firm = cur[~cur["Timekeeper"].isin(flagged)]
     zones = firm["Zone"].value_counts()
     kpi_row(
         [
-            {"label": "Timekeepers reviewed", "value": f"{len(sc)}",
-             "delta": ", ".join(x for x in [f"{n_gone} departed" if n_gone else "",
+            {"label": "Current timekeepers", "value": f"{len(cur)}",
+             "delta": ", ".join(x for x in [f"+{n_gone} departed, shown separately" if n_gone else "",
                                             f"{len(flagged)} provisional" if flagged else ""] if x) or None,
              "delta_color": "off",
              "help": "Everyone with an hours requirement and hours in the period"
@@ -121,7 +123,7 @@ def render():
              "help": "Credited hours at 90% to just under 100% of their prorated Hours Expectation."},
             {"label": f"Below {lo:.0f}%", "value": f"{zones.get('Below 90%', 0)}"},
             {"label": "Bonus eligible", "value": f"{int((firm['Bonus Status'] == 'Eligible').sum())}"},
-            {"label": "On leave / prorated", "value": f"{int((sc['Leave Days'] > 0).sum())} / {int((sc['Expectation'] < sc['Annual Expectation'] - 0.05).sum())}",
+            {"label": "On leave / prorated", "value": f"{int((cur['Leave Days'] > 0).sum())} / {int((cur['Expectation'] < cur['Annual Expectation'] - 0.05).sum())}",
              "help": "People with approved leave in the period / people whose requirement is prorated for leave or a mid-period start or end."},
         ]
     )
@@ -133,30 +135,36 @@ def render():
         st.info("No timekeepers match the selected roles.")
         return
 
+    view_cur, view_gone = view[view["Employment"] == "Current"], view[view["Employment"] != "Current"]
     st.subheader("Hours vs. prorated Hours Expectation")
-    st.plotly_chart(evaluation_window_chart(view, lo, hi, flagged=flagged, departed=_departed_labels(view)),
-                    use_container_width=True,
-                    config={"displayModeBar": False})
+    main_fig = evaluation_window_chart(view_cur, lo, hi, flagged=flagged)
+    st.plotly_chart(main_fig, use_container_width=True, config={"displayModeBar": False})
     st.caption(
         f"Each bar is credited hours (client + Firm's Own Account + pro bono + creditable non-billable "
         f"up to the {config.CREDITABLE_NB_CAP}-hour cap) as a % of the person's Hours Expectation "
         f"prorated for approved leave and partial-year employment. The shaded band marks the "
         f"{lo:.0f}–{hi:.0f}% evaluation window. Violet bars mark a designated role (e.g. General Counsel)."
-        + (" Hatched bars are departed timekeepers, measured against the requirement prorated to their last day."
-           if (view["Employment"] != "Current").any() else "")
         + (f" † {', '.join(sorted(flagged))}: requirement prorated from a mid-period start, but the summary "
            "export's full-year hours include time before that date (e.g. as a contractor), so this reads high "
            "-- the time-detail export fixes it." if flagged else "")
     )
+    gone_fig = None
+    if not view_gone.empty:
+        st.subheader(f"Departed timekeepers ({len(view_gone)})")
+        gone_fig = evaluation_window_chart(view_gone, lo, hi, departed=_departed_labels(view_gone))
+        st.plotly_chart(gone_fig, use_container_width=True, config={"displayModeBar": False})
+        st.caption("Left during the period; each measured against requirements prorated to their last day. "
+                   "Not counted in the headline figures above.")
 
-    _window_table(view, lo, hi)
+    _window_table(view_cur, lo, hi)
     _leave_panel(sc_all, people, leave, fy_start, fy_end)
     _excluded_summary(excluded)
     _scorecard_tabs(view, roles)
+    insights, client_html = _client_service_section(people, view, fy_start, fy_end, source)
 
     notes = _report_notes(source, sc, leave, flagged)
     d1, d2 = st.columns(2)
-    window = view[view["Zone"] == "90–100% window"].sort_values("% of Expectation", ascending=False)
+    window = view_cur[view_cur["Zone"] == "90–100% window"].sort_values("% of Expectation", ascending=False)
     window_html = ""
     if not window.empty:
         w = window.assign(**{"Hours Short of 100%": window["Expectation"] - window["Credited Hours"]})
@@ -168,10 +176,11 @@ def render():
         "Download leadership report (HTML)",
         leadership_report.build_html(
             view, fy_start, fy_end, fy_end, mp._SOURCE_LABELS.get(source, source), notes,
-            chart_fig=evaluation_window_chart(view, lo, hi, flagged=flagged, departed=_departed_labels(view)),
+            chart_fig=main_fig,
             chart_title=f"Hours vs. prorated Hours Expectation — {lo:.0f}–{hi:.0f}% evaluation window",
             extra_html=window_html, appendix_html=_appendix_html(departed),
             provisional=flagged, show_pro_bono=(source == "labor_detail"),
+            departed_fig=gone_fig, insights=insights, client_html=client_html,
         ).encode(),
         file_name=f"Measuring_Period_Review_FY{fy_end.year}.html",
         mime="text/html",
@@ -197,6 +206,75 @@ def render():
     st.divider()
     mp._section_timekeeper_profitability(fy_start, fy_end, fy_end)
     _appendix(departed, fy_start, fy_end)
+
+
+def _client_service_section(people, sc, fy_start, fy_end, source) -> tuple[list[str], str]:
+    """Client service hours pool (everyone who did client work, incl. owners and
+    contractors) and each timekeeper's hours by client type. Returns
+    (insights, report HTML)."""
+    from dashboard import client_service as cs
+    from dashboard.charts.client_service import pool_chart, timekeeper_chart
+
+    st.subheader("Client service hours")
+    if source != "labor_detail":
+        st.info("Needs the Vantagepoint time-detail export: the summary exports have no matter, so hours can't be "
+                "split by client type or attributed to contractors and owners.")
+        return [], ""
+    e = cs.service_entries(people, fy_start, fy_end)
+    if e is None or e.empty:
+        st.info("No client time in the labor detail for this period.")
+        return [], ""
+    types = cs.client_type_order(e)
+    pool = cs.pool_summary(e)
+    tk = cs.by_timekeeper(e, min_hours=1)
+    insights = cs.insights(e, sc, fy_start, fy_end)
+    mapped = (config.REFERENCE_DIR / "matter_clients.csv").exists()
+    basis = ("Client type comes from reference/matter_clients.csv." if mapped else
+             "Client type is the practice the matter belongs to (Law = LLP matter numbers, Advisory = LLC), with pro "
+             "bono and Firm's Own Account separate. Add reference/matter_clients.csv (matter_code, client, "
+             "client_type) to split by client type such as public agency, developer or nonprofit.")
+    caption = (f"Every hour on client matters, pro bono and Firm's Own Account, by everyone who logged it -- including "
+               f"owners, contractors and staff with no hours requirement. {basis} Hours before a timekeeper's start "
+               "date count in their prior group (e.g. Brian Kim as a contractor before 7/1).")
+
+    k = st.columns(4)
+    total = pool["Client Service Hours"].sum()
+    req = pool.loc[pool["Pool"].isin(["Group 1 — Attorneys", "Group 2 — Professional staff", "Departed timekeepers"]),
+                   "Client Service Hours"].sum()
+    contr = pool.loc[pool["Pool"] == "Contractors", "Client Service Hours"].sum()
+    k[0].metric("Client service hours", f"{total:,.0f}")
+    k[1].metric("By requirement holders", f"{req / total * 100:.0f}%", help="Group 1, Group 2 and departed timekeepers")
+    k[2].metric("By contractors", f"{contr:,.0f}", f"{contr / total * 100:.0f}% of pool", delta_color="off")
+    k[3].metric("Billing value", fmt_currency(pool["Billing Value"].sum(), short=True),
+                help="Hours x standard bill rate, before write-downs")
+    fig_pool = pool_chart(pool, types)
+    st.plotly_chart(fig_pool, use_container_width=True, config={"displayModeBar": False})
+    hrs = st.column_config.NumberColumn(format="localized")
+    st.dataframe(round_for_display(pool), use_container_width=True, hide_index=True,
+                 column_config={**{c: hrs for c in [*types, "Client Service Hours"]},
+                                "Share of Pool %": st.column_config.NumberColumn(format="%g%%"),
+                                "Billing Value": st.column_config.NumberColumn(format="$%,.0f")})
+    st.caption(caption)
+    fig_tk = timekeeper_chart(tk, types)
+    with st.expander("By timekeeper and client type", expanded=False):
+        st.plotly_chart(fig_tk, use_container_width=True, config={"displayModeBar": False})
+        st.dataframe(round_for_display(tk), use_container_width=True, hide_index=True,
+                     column_config={c: hrs for c in [*types, "Client Service Hours"]})
+    with st.expander(f"Key insights ({len(insights)})", expanded=True):
+        for i in insights:
+            st.markdown(f"- {i}")
+
+    to_html = lambda f: f.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False})
+    cols = [("Pool", "txt"), *[(t, "hrs") for t in types], ("Client Service Hours", "hrs"), ("People", "hrs"),
+            ("Share of Pool %", "pct")]
+    html_out = ("<h2>Client service hours — the firm's pool</h2>"
+                f"<p class='method'>{caption}</p>" + to_html(fig_pool)
+                + "<div class='scroll'>" + leadership_report.table_html(pool, cols) + "</div>"
+                + "<h3>By timekeeper and client type</h3>" + to_html(fig_tk)
+                + "<div class='scroll'>" + leadership_report.table_html(
+                    tk, [("Timekeeper", "txt"), ("Pool", "txt"), *[(t, "hrs") for t in types],
+                         ("Client Service Hours", "hrs")]) + "</div>")
+    return insights, html_out
 
 
 def _departed_labels(view: pd.DataFrame) -> dict:
@@ -930,7 +1008,8 @@ def _report_notes(source, sc, leave, flagged: set | None = None) -> list[str]:
         if n_leave else "No approved leave is recorded for this period; requirements are prorated only for mid-period start or end dates.")
     gone = sc[sc["Employment"] != "Current"] if "Employment" in sc else sc.iloc[0:0]
     if not gone.empty:
-        notes.append("Departed timekeepers are included, measured against requirements prorated to their last day: "
+        notes.append("Departed timekeepers are reported as a separate group, measured against requirements prorated to their last day: "
                      + ", ".join(f"{r.Timekeeper} ({r.Employment.lower()})" for r in gone.sort_values("Timekeeper").itertuples()) + ".")
-    notes.append("Owners, contractors, advisory and administrative staff have no hourly requirement and are not shown.")
+    notes.append("Owners, contractors, advisory and administrative staff have no hourly requirement, so they aren't scored; "
+                 "their client hours are counted in the client service hours section.")
     return notes

@@ -56,12 +56,20 @@ def _table(df: pd.DataFrame, cols: list[tuple[str, str]], drop_empty: set[str] =
 def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, notes: list[str] | None = None,
                chart_fig=None, chart_title: str = "Credited hours vs. prorated Hours Expectation",
                extra_html: str = "", appendix_html: str = "", provisional: set | None = None,
-               show_pro_bono: bool = True) -> str:
+               show_pro_bono: bool = True, departed_fig=None, insights: list[str] | None = None,
+               client_html: str = "") -> str:
     """chart_fig replaces the default progress chart (e.g. the evaluation-
     window chart); extra_html is inserted between the chart and the
-    scorecard (e.g. a table of timekeepers in the window)."""
+    scorecard (e.g. a table of timekeepers in the window). Rows whose
+    Employment isn't "Current" are reported as a separate Departed group
+    (departed_fig is its chart). insights are listed near the top;
+    client_html is the client service hours section."""
     closed = as_of >= fy_end
     provisional = provisional or set()
+    departed = sc.iloc[0:0]
+    if "Employment" in sc:
+        departed = sc[sc["Employment"] != "Current"]
+        sc = sc[sc["Employment"] == "Current"]
     full = sc
     sc = sc[~sc["Timekeeper"].isin(provisional)]  # headline counts exclude provisional results
     n = len(full)
@@ -76,6 +84,8 @@ def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, not
         ("Short" if closed else "Watch / behind", f"{short}"),
         ("Bonus eligible", f"{bonus}"),
     ]
+    if not departed.empty:
+        kpis.append(("Departed (reported separately)", f"{len(departed)}"))
     if provisional:
         kpis.append(("Provisional †", f"{len(provisional)}"))
     elif has_total and show_pro_bono:
@@ -89,6 +99,26 @@ def build_html(sc: pd.DataFrame, fy_start, fy_end, as_of, source_label: str, not
         expected_pct = full["Expected to Date"] / full["Expectation"].where(full["Expectation"] > 0) * 100
         chart_fig = target_progress(full, expected_pct)
     chart = chart_fig.to_html(full_html=False, include_plotlyjs=True, config={"displayModeBar": False})
+
+    departed_html = ""
+    if not departed.empty:
+        d = departed.sort_values("% of Expectation", ascending=False).assign(
+            **{"Last Day": departed["Employment"].str.replace("Left ", "", regex=False),
+               "Group": departed["Role"].map(lambda r: _ROLE_LABELS.get(r, r).split(" — ")[0])})
+        departed_html = (
+            f"<h2>Departed timekeepers ({len(d)})</h2>"
+            "<p class='method'>Left during the measuring period. Each is measured against requirements prorated "
+            "to their last day (workdays employed ÷ workdays in the period), and none are counted in the headline "
+            "figures above.</p>"
+            + (departed_fig.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False})
+               if departed_fig is not None else "")
+            + "<div class='scroll'>" + _table(d, [
+                ("Timekeeper", "txt"), ("Group", "txt"), ("Last Day", "txt"), ("Annual Expectation", "hrs"),
+                ("Expectation", "hrs"), ("Client", "hrs"), ("Pro Bono", "hrs"), ("Creditable NB (counted)", "hrs"),
+                ("Credited Hours", "hrs"), ("% of Expectation", "pct"), ("Expectation Status", "txt"),
+                ("Bonus Status", "txt")], drop_empty={"Pro Bono", "Creditable NB (counted)"}) + "</div>")
+    insights_html = ("<h2>Key insights</h2><ul class='insights'>"
+                     + "".join(f"<li>{html.escape(i)}</li>" for i in insights) + "</ul>") if insights else ""
 
     sections = []
     full = full.assign(Timekeeper=full["Timekeeper"].map(lambda t: f"{t} †" if t in provisional else t))
@@ -139,19 +169,23 @@ th, td {{ border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: ri
 th {{ color: var(--ink2); font-weight: 600; position: sticky; top: 0; background: #f4f3ef; }}
 td.txt, th:first-child {{ text-align: left; }}
 .pill {{ padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }}
-.good {{ background:#dcf3dc; color:#0b6b0b; }} .ok {{ background:#d9f2ea; color:#0e6f4f; }}
-.warn {{ background:#fdf0cf; color:#7a5600; }} .bad {{ background:#f9dcdc; color:#9b2222; }}
+.good {{ background:#e3edf9; color:#184f95; }} .ok {{ background:#e8f1ee; color:#2f5f4f; }}
+.warn {{ background:#f6f0e2; color:#6b5418; }} .bad {{ background:#f2ecea; color:#7a4038; }}
+.insights {{ font-size: 14px; line-height: 1.55; padding-left: 20px; }} .insights li {{ margin-bottom: 6px; }}
 .method {{ color: var(--ink2); font-size: 12px; line-height: 1.5; }}
 @media print {{ body {{ max-width: none; }} .kpi {{ break-inside: avoid; }} }}
 </style></head><body>
 <h1>Measuring Period Hours — {fy_start:%b %-d, %Y} to {fy_end:%b %-d, %Y}</h1>
 <div class="sub">Hours through {as_of:%b %-d, %Y}{' (period closed)' if closed else ''} · generated {datetime.date.today():%b %-d, %Y}</div>
 <div class="kpis">{kpi_html}</div>
+{insights_html}
 <h2>{html.escape(chart_title)}</h2>
 {chart}
 {extra_html}
-<h2>Scorecard</h2>
+<h2>Scorecard{' — current timekeepers' if not departed.empty else ''}</h2>
 <div class="scroll">{''.join(sections)}</div>
+{departed_html}
+{client_html}
 {appendix_html}
 <h2>Method</h2>
 <p class="method">{html.escape(method)}</p>
