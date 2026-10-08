@@ -197,7 +197,7 @@ def _vp_entity(code: str, name: str) -> str | None:
             if name.strip().upper().endswith(suffix.upper()):
                 return ent
         return None
-    m = re.match(r"^([A-Z]+?)(?:OH)?\d", code.upper())
+    m = re.match(r"^([A-Z]+?)(?:OH)?[-\d]", code.upper())
     return config.MATTER_CODE_ENTITY_PREFIXES.get(m.group(1)) if m else None
 
 

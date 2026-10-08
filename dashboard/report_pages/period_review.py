@@ -161,6 +161,7 @@ def render():
     _excluded_summary(excluded)
     _scorecard_tabs(view, roles)
     insights, client_html = _client_service_section(people, view, fy_start, fy_end, source)
+    analysis_html = _client_analysis_section(people, view, fy_start, fy_end, source)
 
     notes = _report_notes(source, sc, leave, flagged)
     d1, d2 = st.columns(2)
@@ -180,7 +181,7 @@ def render():
             chart_title=f"Hours vs. prorated Hours Expectation — {lo:.0f}–{hi:.0f}% evaluation window",
             extra_html=window_html, appendix_html=_appendix_html(departed),
             provisional=flagged, show_pro_bono=(source == "labor_detail"),
-            departed_fig=gone_fig, insights=insights, client_html=client_html,
+            departed_fig=gone_fig, insights=insights, client_html=client_html + analysis_html,
         ).encode(),
         file_name=f"Measuring_Period_Review_FY{fy_end.year}.html",
         mime="text/html",
@@ -275,6 +276,158 @@ def _client_service_section(people, sc, fy_start, fy_end, source) -> tuple[list[
                     tk, [("Timekeeper", "txt"), ("Pool", "txt"), *[(t, "hrs") for t in types],
                          ("Client Service Hours", "hrs")]) + "</div>")
     return insights, html_out
+
+
+def _client_analysis_section(people, sc, fy_start, fy_end, source) -> str:
+    """Top clients and concentration, where creditable time came from,
+    seasonality of client hours, and LLP economics. Returns report HTML."""
+    from dashboard import client_analysis as ca
+    from dashboard import client_service as cs
+    from dashboard.charts import client_analysis as charts
+
+    if source != "labor_detail":
+        return ""
+    to_html = lambda f: f.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False})
+    hrs = st.column_config.NumberColumn(format="localized")
+    pct = st.column_config.NumberColumn(format="%.1f%%")
+    money = st.column_config.NumberColumn(format="$%,.0f")
+    out = []
+
+    # --- Top clients / concentration ------------------------------------
+    conc = ca.concentration(fy_start, fy_end)
+    if conc:
+        top, m = conc
+        unit = "client" if m["by_client"] else "matter"
+        st.subheader("Top 10 clients and concentration")
+        k = st.columns(5)
+        k[0].metric("Largest " + unit, f"{m['top1']:.1f}%", help="Share of client hours")
+        k[1].metric("Top 5", f"{m['top5']:.0f}%")
+        k[2].metric("Top 10", f"{m['top10']:.0f}%", f"{m['top10_value']:.0f}% of billing value", delta_color="off")
+        k[3].metric(f"{unit.title()}s to reach 50%", f"{m['to50']} of {m['clients']}")
+        k[4].metric("Concentration index (HHI)", f"{m['hhi']:,.0f}",
+                    help="Sum of squared shares x 10,000. Under 1,500 = unconcentrated; 1,500-2,500 moderate; over 2,500 high.")
+        fig = charts.top_clients_chart(top, label="Client" if m["by_client"] else "Matter")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        risk = []
+        if m["winding_down"]:
+            risk.append("**Winding down** (last-quarter hours under a quarter of the period's average pace): "
+                        + ", ".join(m["winding_down"]))
+        if m["key_person"]:
+            risk.append("**Key-person dependence** (one timekeeper did half or more of the hours): "
+                        + ", ".join(m["key_person"]))
+        basis = ("" if m["by_client"] else
+                 "The labor export has no client field, so each matter is shown as its own client; matters such as "
+                 "\"General Advisory\" belong to different clients. Add a `client` column to "
+                 "reference/matter_clients.csv (from Vantagepoint's project list) to roll matters up to clients. ")
+        st.caption(basis + "Matter-level detail is available for FY2026 only -- earlier periods come from the "
+                   "firm's monthly hours workbooks, which have no matter breakdown.")
+        for r in risk:
+            st.markdown("- " + r)
+        tbl = top[["Rank", "Client", "Entity", "Hours", "Share of Hours %", "Cumulative %", "Value", "Share of Value %",
+                   "People", "Lead Timekeeper", "Lead Share %", "Last-Quarter Pace", "First", "Last"]]
+        st.dataframe(round_for_display(tbl), use_container_width=True, hide_index=True, column_config={
+            "Hours": hrs, "Value": money, "Share of Hours %": pct, "Cumulative %": pct, "Share of Value %": pct,
+            "Lead Share %": pct, "Last-Quarter Pace": st.column_config.NumberColumn(
+                format="%.2f", help="Last quarter's hours / the period's quarterly average (1 = steady, 0 = stopped)"),
+            "First": st.column_config.DateColumn(format="MM/DD/YYYY"), "Last": st.column_config.DateColumn(format="MM/DD/YYYY")})
+        hhi_band = "unconcentrated" if m["hhi"] < 1500 else "moderately concentrated" if m["hhi"] < 2500 else "highly concentrated"
+        out.append(
+            f"<h2>Top 10 {unit}s and concentration</h2><p class='method'>{basis}The largest {unit} took "
+            f"{m['top1']:.1f}% of {m['client_hours']:,.0f} client hours; the top 5 {m['top5']:.0f}%; the top 10 "
+            f"{m['top10']:.0f}% of hours and {m['top10_value']:.0f}% of billing value. {m['to50']} of {m['clients']} "
+            f"{unit}s make up half the hours (HHI {m['hhi']:,.0f}: {hhi_band}).</p>" + to_html(fig)
+            + "".join(f"<p class='method'>{r.replace('**', '')}</p>" for r in risk)
+            + "<div class='scroll'>" + leadership_report.table_html(top, [
+                ("Rank", "hrs"), ("Client", "txt"), ("Entity", "txt"), ("Hours", "hrs"), ("Share of Hours %", "pct"),
+                ("Cumulative %", "pct"), ("Share of Value %", "pct"), ("People", "hrs"), ("Lead Timekeeper", "txt"),
+                ("Lead Share %", "pct")]) + "</div>")
+
+    # --- Creditable sources ---------------------------------------------
+    cr = ca.creditable_sources(fy_start, fy_end, sc, people)
+    if cr:
+        st.subheader("Where creditable non-billable hours came from")
+        fig = charts.creditable_chart(cr["by_activity"])
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        ent = cr["by_entity"]
+        note = (f"{cr['total']:,.0f} creditable hours: " + ", ".join(f"{k} {v:,.0f}" for k, v in ent.items())
+                + ". Creditable time is booked to the firm's own (OH) projects, not to a client matter, and the "
+                "export's comment field is empty -- so client development can't be traced to a prospect or client. "
+                "To see that, record the prospect in the time-entry comment or open a business-development "
+                "project per pursuit.")
+        st.caption(note)
+        bp = cr["by_person"]
+        st.dataframe(round_for_display(bp), use_container_width=True, hide_index=True,
+                     column_config={"Hours": hrs, "Counted": hrs, "Over Cap": hrs})
+        out.append("<h2>Where creditable non-billable hours came from</h2>" + to_html(fig)
+                   + f"<p class='method'>{note}</p><div class='scroll'>" + leadership_report.table_html(
+                       bp.head(20), [("Timekeeper", "txt"), ("Hours", "hrs"), ("Main Activity", "txt"),
+                                     ("Counted", "hrs"), ("Over Cap", "hrs")]) + "</div>")
+
+    # --- Seasonality ----------------------------------------------------
+    se = ca.seasonality(fy_start, fy_end, people)
+    if se:
+        st.subheader("Seasonality of client hours")
+        mm = se["monthly"]
+        f1 = charts.monthly_practice_chart(se["by_practice"], mm)
+        f2 = charts.per_workday_chart(se["history"])
+        f3 = charts.pto_chart(mm)
+        st.plotly_chart(f1, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(f2, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(f3, use_container_width=True, config={"displayModeBar": False})
+        hi, lo_ = mm.loc[mm["Per Workday"].idxmax()], mm.loc[mm["Per Workday"].idxmin()]
+        ranked = mm.assign(PerWD=mm["Per Workday"]).sort_values("PerWD")
+        lows, highs = ranked.head(3).sort_values("Month"), ranked.tail(3).sort_values("Month")
+        hist = se["history"]
+        fy_avg = hist.groupby("FY")["Per Timekeeper per Workday"].mean()
+        dow = se["dow"]
+        wk = dow.reindex(["Mon", "Tue", "Wed", "Thu", "Fri"])
+        notes = [
+            f"Per workday, client hours ran from {lo_['Per Workday']:,.0f} in {lo_['Month']:%B %Y} to "
+            f"{hi['Per Workday']:,.0f} in {hi['Month']:%B %Y} -- {hi['Per Workday'] / lo_['Per Workday']:.1f}x.",
+            "Lowest months per workday: " + ", ".join(f"{r.Month:%b} ({r.PerWD:,.0f})" for r in lows.itertuples())
+            + f", when PTO/holiday hours were {lows['PTO / Holiday'].mean():,.0f} a month vs. "
+            f"{mm['PTO / Holiday'].mean():,.0f} on average. Highest: "
+            + ", ".join(f"{r.Month:%b} ({r.PerWD:,.0f})" for r in highs.itertuples()) + ".",
+            "Billable hours per requirement holder per workday, by fiscal year: "
+            + ", ".join(f"{k} {v:.2f}" for k, v in fy_avg.items())
+            + " (FY2024-25 from the monthly hours workbooks; FY2026 from the labor detail, client matters only).",
+            f"Weekdays: Friday is the lightest ({wk['Fri']:,.0f} hrs vs. {wk.max():,.0f} on {wk.idxmax()}); "
+            f"weekends carry {dow.reindex(['Sat', 'Sun']).sum():,.0f} hrs.",
+        ]
+        for n in notes:
+            st.markdown("- " + n)
+        out.append("<h2>Seasonality of client hours</h2>" + to_html(f1) + to_html(f2) + to_html(f3)
+                   + "<ul class='method'>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>")
+
+    # --- LLP economics ----------------------------------------------------
+    service = cs.service_entries(people, fy_start, fy_end)
+    llp = ca.llp_economics(service, sc, fy_start, fy_end, people) if service is not None else None
+    if llp:
+        st.subheader("LLP operating economics")
+        fig = charts.llp_rate_chart(llp["by_pool"])
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        mix = llp["g1_mix"]
+        tot = mix.sum()
+        oth = llp["g1_other"].head(5)
+        facts = [
+            f"Current Group 1 attorneys ({llp['g1_count']}) recorded {tot:,.0f} hours: "
+            + ", ".join(f"{k} {v / tot * 100:.0f}%" for k, v in mix.items()) + ".",
+            "Largest non-creditable non-billable uses: " + ", ".join(f"{k} {v:,.0f}" for k, v in oth.items()) + ".",
+            f"{llp['n_matters']} LLP client matters had time; {llp['small_matters']} had under 20 hours "
+            f"({llp['small_hours']:,.0f} hrs in total).",
+            "Most widely staffed LLP matters: " + ", ".join(
+                f"{r.matter_name} ({r.People} people, {r.Hours:,.0f} hrs)" for r in llp["matters"].head(3).itertuples()) + ".",
+        ]
+        for f_ in facts:
+            st.markdown("- " + f_)
+        st.caption("Billing value is hours x standard rate, before write-downs. Without cost rates and collections, "
+                   "these show where revenue capacity sits, not margin.")
+        with st.expander("LLP client hours by timekeeper (50+ hours)"):
+            st.dataframe(round_for_display(llp["by_timekeeper"]), use_container_width=True, hide_index=True,
+                         column_config={"Hours": hrs, "Value": money, "Value / Hour": money})
+        out.append("<h2>LLP operating economics</h2>" + to_html(fig) + "<ul class='method'>"
+                   + "".join(f"<li>{f_}</li>" for f_ in facts) + "</ul>")
+    return "".join(out)
 
 
 def _departed_labels(view: pd.DataFrame) -> dict:
