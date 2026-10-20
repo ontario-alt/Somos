@@ -35,13 +35,16 @@ def parse_money(raw: str | None) -> float | None:
     s = raw.strip().strip("'").strip()
     if s == "":
         return None
+    # Accounting format: "(1,029.60)" is negative.
+    negative = "(" in s and ")" in s
     s = _MONEY_RE.sub("", s)
     if s in ("", "-", "."):
         return None
     try:
-        return float(s)
+        v = float(s)
     except ValueError:
         return None
+    return -abs(v) if negative else v
 
 
 def parse_vp_date(raw: str | None):
