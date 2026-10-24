@@ -55,6 +55,7 @@ from etl import (
     parse_matter_list,
     parse_monthly_hours_workbook,
     parse_originations,
+    parse_pl_workbook,
     parse_receipts,
     parse_timekeeper_hours,
     parse_wip,
@@ -69,7 +70,7 @@ logger = logging.getLogger("somos.etl.warehouse")
 _TEXT_COLUMNS = {
     "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
     "client_name_confidence", "target_type", "employee_number", "name_key", "matter_name",
-    "labor_code", "billing_status", "leave_type", "note", "sheet", "hours_category", "role_hint", "staff_group", "designation",
+    "labor_code", "billing_status", "leave_type", "note", "sheet", "category", "account_number", "line_item", "section", "hours_category", "role_hint", "staff_group", "designation",
 }
 # Optional date columns that are often entirely blank (nobody joined or
 # left mid-period, no open-ended leave) -- an all-None column would
@@ -302,6 +303,14 @@ def build(snapshot_date: date | None = None) -> Path:
     parse_leave.write_processed(leave_rows)
     con.execute("DROP TABLE IF EXISTS employee_leave")
     _create_table(con, "employee_leave", leave_rows, snapshot_date)
+
+    # --- P&L workbook (baseline for the Budget page) ---------------------
+    # Re-read in full every run, so rebuilt rather than upserted.
+    pl_rows = parse_pl_workbook.parse()
+    parse_pl_workbook.write_processed(pl_rows)
+    if pl_rows:
+        con.execute("DROP TABLE IF EXISTS pl_actuals")
+    _create_table(con, "pl_actuals", pl_rows, snapshot_date, snapshot_date_col="period_end")
 
     con.close()
     logger.info("Warehouse build complete -> %s", config.WAREHOUSE_PATH)

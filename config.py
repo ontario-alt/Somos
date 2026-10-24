@@ -107,6 +107,13 @@ SOURCE_FILE_PATTERNS = {
     "billing_hours_analysis": ["*Billing*Hours*Analysis*.xlsx"],
     "labor_detail": ["*Labor*Detail*.csv", "*Labor*Detail*.xlsx", "*Time*Analysis*.csv", "*Time*Analysis*.xlsx"],
     "nte_tracking": ["*NTE*Tracking*.xlsx"],
+    # The firm's P&L (income statement) workbook -- monthly or annual
+    # columns, one row per line item. Baseline for the Budget page's
+    # overhead lines. See etl/parse_pl_workbook.py.
+    "pl_workbook": [
+        "*P&L*.xlsx", "*P & L*.xlsx", "*PnL*.xlsx", "*P_L*.xlsx",
+        "*Profit*Loss*.xlsx", "*Income*Statement*.xlsx",
+    ],
 }
 
 # The NTE Tracking Report only covers matters billed against a
@@ -447,3 +454,40 @@ EMPLOYEE_TARGETS_PATH = REFERENCE_DIR / "employee_targets.csv"
 ORIGINATION_TARGETS = {
     # "Attorney Name": 500_000.00,
 }
+
+
+# ---------------------------------------------------------------------------
+# Budget (Budget page). Defaults only -- every one of these is editable on
+# the page, and the page's saved inputs (reference/budget_<year>/) win.
+# ---------------------------------------------------------------------------
+BUDGET_YEAR = 2027                 # calendar year being budgeted
+BUDGET_DEFAULTS = {
+    "rate_increase_pct": 0.05,     # billing rate increase
+    "rate_increase_month": 1,      # month (1-12) the new rates take effect
+    "salary_increase_pct": 0.03,   # annual raise
+    "salary_increase_month": 1,    # month (1-12) raises take effect
+    # Payroll taxes + benefits on top of salary. This is the fringe piece
+    # only (16.4%), NOT LABOR_BURDEN_RATE -- that one also folds in
+    # overhead, which the budget lists line by line instead.
+    "fringe_pct": 0.164,
+    "realization_pct": 0.90,       # billed / standard value
+    "overhead_growth_pct": 0.03,   # default change for prior-year overhead lines
+}
+# Line items whose names contain any of these are personnel costs. They're
+# replaced by the people plan (salary + fringe) instead of grown from the
+# prior year, so payroll isn't counted twice. Toggle per line on the page.
+BUDGET_PERSONNEL_KEYWORDS = [
+    "salar", "wage", "payroll", "bonus", "401k", "401(k)", "retirement",
+    "health", "medical", "dental", "vision", "benefit", "fica", "futa",
+    "suta", "workers comp", "commission", "compensation",
+]
+# Revenue lines whose names contain any of these stay on prior year + %
+# (they aren't driven by billable hours). Every other revenue line is
+# replaced by the people plan's fee revenue.
+BUDGET_NON_FEE_REVENUE_KEYWORDS = [
+    "interest", "reimburs", "other income", "other revenue", "dividend",
+    "gain", "rental", "sublease", "misc",
+]
+# Saved budget inputs (assumptions, people plan, overhead lines) live here,
+# one folder per year. Contains names and pay, so it's gitignored.
+BUDGET_DIR = REFERENCE_DIR

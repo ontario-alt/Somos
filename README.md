@@ -167,6 +167,44 @@ draft's bands: ≤ $150 / ≤ $250 / higher cost per billable hour, and ≥ 30% 
   - Don't use public hosting such as Streamlit Community Cloud. These are
     compensation-relevant figures with employee names.
 
+## Budget (calendar 2027)
+
+The **Budget** page builds next year's budget (`config.BUDGET_YEAR`) with a
+hybrid method. The logic is in `dashboard/budget_model.py`.
+
+| Part | How it's budgeted | Prefilled from |
+|---|---|---|
+| Fee revenue | billable hours x seasonality x rate x realization, per person, for the months they're on staff | hour targets (`employee_targets.csv` / role defaults), last 12 months of labor detail for rates |
+| Salaries + fringe | annual salary / 12 per month on staff, raise from the raise month, + fringe % (16.4%) | Employee Cost Rate Details (salary rate x 12, hourly rate x hours) |
+| Overhead and other lines | prior-year actual x (1 + change %), or a fixed amount | the P&L workbook, else monthly Vantagepoint trial balances |
+| Budget drivers | amounts you enter: per month, per year or one-time, between a start and end month | GL equity accounts named "draw" / "distribution" |
+
+- **No double counting.** Prior-year revenue and payroll lines (salaries,
+  payroll taxes, benefits...) are marked *People plan* and replaced by the
+  people plan. Change any line's treatment on the Overhead tab.
+- **Owner draws** are a driver section of their own. They sit below net
+  income, so the budget shows net income before draws, the draws, and
+  what's left. Put the owner's name in the driver's *Person* column and
+  their people-plan salary is set to $0 (the draw is their pay); their
+  billable revenue still counts.
+- **Saving.** Edits stay in your browser session until you click **Save
+  inputs**. That writes `reference/budget_2027/` (assumptions, people,
+  overhead choices, drivers). It's gitignored because it holds names and
+  pay, and it loads automatically next time.
+- **Excel.** *Save & export* downloads a workbook with live formulas
+  (Assumptions, People, Revenue/Salary by Person, Overhead, Drivers,
+  Budget P&L). Blue cells are inputs; every total recalculates in Excel.
+
+**P&L workbook.** Save it in the raw data folder with "P&L", "PnL",
+"Profit Loss" or "Income Statement" in the name (`etl/parse_pl_workbook.py`).
+It reads month columns ("Jan 2026", "Jan-26", dates...) or a single
+Total/year column, one line item per row ("6100 · Rent" or "Rent"), with
+section headers (Income, Cost of Goods Sold, Expenses, Other Income/Expense)
+and subtotals skipped. Each tab is read as one entity; tabs named
+Consolidated/Combined/Summary are left out by default on the page. **Not
+yet verified against the firm's real workbook**: check the Overhead tab's
+prior-year lines against the P&L the first time.
+
 ## Monthly refresh (bookkeeping team)
 
 1. Export the latest reports from Vantagepoint and save them into the
@@ -217,6 +255,7 @@ same command either way; the weekly page just reads whatever's newest.
 | GBNF (Gone But Not Forgotten) | Parsed (`etl/parse_gbnf.py`) from the "GBNF AR Aged" export -- old collectibles the firm tracks separately. Its own `gbnf_ar_aging` table, deliberately never merged into `ar_aging_detail`, so a GBNF matter's balance never inflates the regular aging book's Over 120/oldest totals or the Monthly page's Total AR. Shown in its own section on the Weekly page. |
 | Labor detail (time entries) | Parsed (`etl/parse_labor_detail.py`). **Not yet verified against a real export.** It was built from Vantagepoint's standard labor fields and tested on synthetic data, so check the build log's hours and pro bono totals against Vantagepoint the first time. This is the preferred source for the measuring-period scorecard (pro bono split, monthly pace) and for timekeeper and practice-group profitability. |
 | Monthly Hours Report workbook | Parsed (`etl/parse_monthly_hours_workbook.py`) from the firm's hand-built per-timekeeper workbook. It was verified against the FY24 sample: each person's 12 months reconcile to the workbook's own totals row. It backfills closed measuring periods for the scorecard and the 2-year promotion lookback. |
+| P&L workbook | Parsed (`etl/parse_pl_workbook.py`) into `pl_actuals`, the Budget page's prior-year baseline. Built for common QuickBooks / hand-built layouts; not yet verified against the firm's file. |
 | Approved leave | Hand-maintained `reference/leave.csv` (`etl/parse_leave.py`) and used to prorate targets. |
 | Timekeeper hours (measuring period) | Parsed (`etl/parse_timekeeper_hours.py`) from the "All Timekeepers Hours" export -- per-employee, per-entity hours (total/billable/credited/PTO/HOL) for the current fiscal year. Powers the Measuring Period page's hours-required-individuals-by-entity tracker: now the *fallback* hours source for the creditable-hours scorecard when no labor detail export is loaded (Credited Hours treated as pro bono, capped at 75). Hours-to-date, not a final figure -- re-upload the same export any time (e.g. month-end close) to refresh with newer actuals; it replaces rather than accumulates, since the period itself doesn't change mid-year. |
 
