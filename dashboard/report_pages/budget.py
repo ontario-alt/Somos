@@ -126,7 +126,10 @@ def _init_state(year: int, baseline: pd.DataFrame, force_defaults: bool = False)
         if firm_fringe:
             a.fringe_pct = round(firm_fringe, 4)
     if drivers is None:
-        drivers = bm.guess_draw_drivers(_gl())
+        draws = query("SELECT * FROM owner_draws") if table_exists("owner_draws") else None
+        drivers = bm.drivers_from_owner_draws(draws, year)
+        if drivers.empty:
+            drivers = bm.guess_draw_drivers(_gl())
     if people is None:
         people = _default_people(a, drivers)
     st.session_state[SS + "year"] = year
@@ -269,8 +272,9 @@ def _drivers_tab() -> pd.DataFrame:
     st.subheader("Budget drivers")
     st.caption(
         "Big items you set directly. **Owner draws** sit below net income, so the budget shows profit before "
-        "and after draws. Name the owner in **Person** and their salary in the people plan is set to $0, so "
-        "their pay isn't counted twice (their billable revenue still counts). Basis: *Per month* repeats the "
+        "and after draws. Name the owner in **Person** and their salary in the people plan is set to \\$0, so "
+        "their pay isn't counted twice (their billable revenue still counts), and their draw is charged against "
+        "their own contribution on the Summary tab. Rows prefill from reference/owner_draws.csv. Basis: *Per month* repeats the "
         "amount each month from start to end; *Per year* spreads it over those months; *One-time* lands in the "
         "start month."
     )
@@ -453,8 +457,10 @@ def _summary_tab(res: bm.BudgetResult, a: bm.Assumptions):
             "pct_of_target": st.column_config.NumberColumn("% of target", format="percent"),
             "revenue": st.column_config.NumberColumn("Revenue", format="$%,.0f"),
             "salary_and_fringe": st.column_config.NumberColumn("Salary + fringe", format="$%,.0f"),
+            "owner_draw": st.column_config.NumberColumn("Owner draw", format="$%,.0f",
+                                                        help="Owner-draw drivers naming this person"),
             "contribution": st.column_config.NumberColumn("Contribution", format="$%,.0f",
-                                                          help="Revenue less salary and fringe (owner draws not included)"),
+                                                          help="Revenue less salary, fringe and owner draw"),
         })
 
 

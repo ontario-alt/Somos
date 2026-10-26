@@ -56,6 +56,7 @@ from etl import (
     parse_matter_list,
     parse_monthly_hours_workbook,
     parse_originations,
+    parse_owner_draws,
     parse_pl_workbook,
     parse_receipts,
     parse_timekeeper_hours,
@@ -85,7 +86,7 @@ _FLOAT_COLUMNS = {
     "leave_weeks", "measuring_period_end_year",
     "standard_value", "billed_amount", "cost_amount", "billable_target", "credit_cap", "total_target", "bonus_threshold",
     "billable_requirement", "total_requirement",
-    "annual_salary", "pay_rate", "employer_taxes", "employer_benefits", "workers_comp", "peo_fees",
+    "annual_salary", "pay_rate", "monthly_draw", "employer_taxes", "employer_benefits", "workers_comp", "peo_fees",
 }
 
 
@@ -314,6 +315,12 @@ def build(snapshot_date: date | None = None) -> Path:
     if pl_rows:
         con.execute("DROP TABLE IF EXISTS pl_actuals")
     _create_table(con, "pl_actuals", pl_rows, snapshot_date, snapshot_date_col="period_end")
+
+    # --- Owner draws (hand-maintained: owners costed at their actual draw) --
+    # Fully replaced each run so a deleted row actually disappears.
+    draw_rows = parse_owner_draws.parse()
+    con.execute("DROP TABLE IF EXISTS owner_draws")
+    _create_table(con, "owner_draws", draw_rows, snapshot_date)
 
     # --- Insperity payroll (salaries + employer cost, for the Budget page) --
     # Re-read in full every run, so rebuilt rather than upserted.

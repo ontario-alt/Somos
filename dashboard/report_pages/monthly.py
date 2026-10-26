@@ -593,6 +593,18 @@ def _section_timekeeper():
         "effective_rate": "Effective Rate ($/hr)",
     }
     money_cols = ["Billing Value", "Effective Rate ($/hr)"]
+    if has_cost and table_exists("owner_draws"):
+        # Owners are costed at their actual monthly draw, not their cost rate.
+        from dashboard import owner_draws
+        from etl.common import name_key
+
+        draws = query("SELECT * FROM owner_draws")
+        as_of = query("SELECT MAX(snapshot_date) AS d FROM wip_transactions").iloc[0]["d"]
+        keys = df["employee_name"].map(name_key)
+        owner = keys.map(owner_draws.base_key).isin(owner_draws.owner_keys(draws))
+        if owner.any():
+            df.loc[owner, "cost"] = [owner_draws.monthly_draw_on(draws, k, as_of) for k in keys[owner]]
+            st.caption("Owners are costed at their actual monthly draw (reference/owner_draws.csv), not their cost rate.")
     if has_cost:
         df["margin"] = df["billing_amount"] - df["cost"]
         rename["cost"] = "Cost"

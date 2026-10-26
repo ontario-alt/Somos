@@ -21,3 +21,4 @@ venv/
 
 # Saved budget inputs (names and pay).
 reference/budget_*/
+reference/owner_draws.csv

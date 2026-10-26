@@ -248,8 +248,57 @@ def is_draw_person(full_name: str, owners: set[str]) -> bool:
     """True if a driver's `person` names this employee: an exact name, or a
     first name / partial that appears in theirs ("Alfred" matches "Alfred
     Fraijo Jr.")."""
+    from etl.common import name_key
+
     n = (full_name or "").lower()
-    return any(o == n or (o and re.search(rf"\b{re.escape(o)}\b", n)) for o in owners)
+    k = name_key(full_name)
+    from dashboard.owner_draws import base_key
+
+    return any(o == n or (o and re.search(rf"\b{re.escape(o)}\b", n)) or (k and base_key(name_key(o)) == base_key(k))
+               for o in owners)
+
+
+def person_draws(people: pd.DataFrame, drivers: pd.DataFrame) -> tuple[np.ndarray, list[list[int]]]:
+    """(annual owner draw per person, driver row indexes linked to each
+    person) -- owner-draw drivers whose Person names that person."""
+    n = len(people)
+    links: list[list[int]] = [[] for _ in range(n)]
+    if n == 0 or drivers is None or drivers.empty:
+        return np.zeros(n), links
+    annual = drivers_monthly(drivers).sum(axis=1)
+    out = np.zeros(n)
+    for j, d in enumerate(drivers.itertuples(index=False)):
+        if d.section != "Owner draws" or not str(d.person or "").strip():
+            continue
+        owner = {str(d.person).strip().lower()}
+        for i, name in enumerate(people["name"]):
+            if is_draw_person(name, owner):
+                out[i] += annual[j]
+                links[i].append(j)
+                break
+    return out, links
+
+
+def drivers_from_owner_draws(draws: pd.DataFrame | None, year: int) -> pd.DataFrame:
+    """Starter owner-draw drivers from reference/owner_draws.csv: one per
+    draw row that falls in the budget year, at its monthly amount."""
+    if draws is None or draws.empty:
+        return empty_drivers()
+    ys, ye = pd.Timestamp(year, 1, 1), pd.Timestamp(year, 12, 31)
+    rows = []
+    for r in draws.itertuples(index=False):
+        s = pd.Timestamp(r.start_date) if pd.notna(r.start_date) else ys
+        e = pd.Timestamp(r.end_date) if pd.notna(r.end_date) else ye
+        if e < ys or s > ye:
+            continue
+        first = str(r.full_name).split()[0]
+        rows.append({
+            "include": True, "driver": f"Owner draw - {first}", "section": "Owner draws", "person": r.full_name,
+            "amount": float(r.monthly_draw), "basis": "Per month",
+            "start_month": max(s, ys).month, "end_month": min(e, ye).month,
+            "note": "From reference/owner_draws.csv",
+        })
+    return pd.DataFrame(rows, columns=DRIVER_COLUMNS) if rows else empty_drivers()
 
 
 def insperity_summary(roster: pd.DataFrame | None, payroll: pd.DataFrame | None) -> pd.DataFrame:
@@ -624,6 +673,7 @@ def compute(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame, driver
     pnl = pd.DataFrame(rows)
 
     p_rev, p_sal = rev.sum(axis=1), sal.sum(axis=1) * (1 + fringe_i)
+    p_draw, _ = person_draws(people, drivers)
     target = pd.to_numeric(people["hours_target"], errors="coerce").to_numpy(dtype=float) if len(people) else np.zeros(0)
     ppl = pd.DataFrame({
         "name": people["name"].to_numpy() if len(people) else [],
@@ -631,8 +681,8 @@ def compute(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame, driver
         "included": people["include"].fillna(False).astype(bool).to_numpy() if len(people) else [],
         "billable_hours": hrs.sum(axis=1), "hours_target": target,
         "pct_of_target": np.where(target > 0, hrs.sum(axis=1) / np.where(target > 0, target, 1), np.nan),
-        "revenue": p_rev, "salary_and_fringe": p_sal,
-        "contribution": p_rev - p_sal,
+        "revenue": p_rev, "salary_and_fringe": p_sal, "owner_draw": p_draw,
+        "contribution": p_rev - p_sal - p_draw,
     })
     ppl = ppl[ppl["included"]].drop(columns="included")
     total_rev_y = float(total_rev.sum())

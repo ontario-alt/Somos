@@ -455,6 +455,11 @@ def resolve_role(target_type: str | None) -> str | None:
 # build_warehouse.py; it won't be overwritten once it exists.
 EMPLOYEE_TARGETS_PATH = REFERENCE_DIR / "employee_targets.csv"
 
+# Owners' actual monthly draws (full_name, monthly_draw, start_date,
+# end_date). Owners listed here are costed at their draw instead of their
+# Vantagepoint cost rate on every page. See etl/parse_owner_draws.py.
+OWNER_DRAWS_PATH = REFERENCE_DIR / "owner_draws.csv"
+
 # ---------------------------------------------------------------------------
 # Targets (fill in as the firm sets them; used by the Measuring Period page)
 # ---------------------------------------------------------------------------

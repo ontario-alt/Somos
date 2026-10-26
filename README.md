@@ -126,12 +126,26 @@ Employee Cost Rate Details and the Matter List feed the profitability views.
     full_name,employee_number,leave_start,leave_end,percent_away,leave_type,note
     Lauren Kim,202,1/5/2026,3/27/2026,100,Parental,
 
+`reference/owner_draws.csv` has one row per owner per draw amount. Owners
+listed here are costed at their **actual draw instead of their
+Vantagepoint cost rate** on the Monthly page, in Measuring Period
+profitability (this also replaces labor detail's cost extension, which
+Vantagepoint builds from the cost rate) and on the Budget page (it
+prefills the owner-draw drivers and charges each owner's draw against
+their own contribution):
+
+    full_name,monthly_draw,start_date,end_date,note
+    Jane Partner,50000,1/1/2026,,
+
+When a draw changes, end the old row and add a new one with the new start
+date. "Jr." / "Sr." / "III" are ignored when matching names.
+
 `reference/name_aliases.csv` (`alias,full_name`) links names spelled differently
 across reports, e.g. "Ricky Pozos" and "Ricardo Pozos", or a full legal name
 and a short one. Quoted nicknames ('Audrey') and role tags ([Contractor]) are
 already ignored when matching.
 
-All three files are gitignored because they contain real names. Set
+These files are gitignored because they contain real names and pay. Set
 `SOMOS_REFERENCE_DIR` to keep them in the shared SharePoint folder.
 
 ### Profitability settings

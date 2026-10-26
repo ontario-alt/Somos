@@ -41,7 +41,7 @@ import pandas as pd
 import streamlit as st
 
 import config
-from dashboard import hours_credit, leadership_report
+from dashboard import hours_credit, leadership_report, owner_draws
 from dashboard.charts.kpi_cards import kpi_row
 from dashboard.charts.placeholder import missing_source
 from dashboard.charts.ranked_bar import ranked_bar
@@ -912,6 +912,24 @@ def _timekeeper_economics(fy_start, as_of) -> tuple[pd.DataFrame, str, str] | No
         )
 
     lab["cost"] = pd.to_numeric(lab["cost"], errors="coerce")
+    # Owners: their actual draws (reference/owner_draws.csv), not the cost
+    # rate -- this also replaces labor detail's cost extension, which
+    # Vantagepoint builds from the same cost rate.
+    if table_exists("owner_draws"):
+        draws = query("SELECT * FROM owner_draws")
+        owners = owner_draws.owner_keys(draws)
+        is_owner = lab["name_key"].map(owner_draws.base_key).isin(owners)
+        if is_owner.any():
+            lab.loc[is_owner, "cost"] = [
+                owner_draws.draw_cost(
+                    draws, k,
+                    max(pd.Timestamp(fy_start), pd.Timestamp(sd)) if pd.notna(sd) else fy_start,
+                    min(pd.Timestamp(as_of), pd.Timestamp(ed)) if pd.notna(ed) else as_of,
+                )
+                for k, sd, ed in zip(lab.loc[is_owner, "name_key"], lab.loc[is_owner, "start_date"],
+                                     lab.loc[is_owner, "end_date"])
+            ]
+            cost_basis += "; owners: actual draws from reference/owner_draws.csv"
     lab["contribution"] = lab["revenue"] - lab["cost"]
     lab["margin_pct"] = lab["contribution"] / lab["revenue"].where(lab["revenue"] != 0) * 100
     lab["revenue_per_hr"] = lab["revenue"] / lab["billable_hours"].where(lab["billable_hours"] > 0)

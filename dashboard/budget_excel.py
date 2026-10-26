@@ -157,8 +157,11 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
     cols = ["Include (Y/N)", "Name", "Role", "Start month", "End month", "Annual salary ($)", "Fringe %",
             "Billable hours (annual rate)", "Target hours (prorated)", "Billing rate ($/hr)", "Realization",
             "Budget hours", "% of target", "Budget revenue ($)", "Salary + fringe ($)", "Contribution ($)",
-            "Prior billable hours", "Prior rate ($/hr)", "Note"]
-    _header(ws, FIRST_ROW - 1, cols, [9, 28, 12, 8, 8, 14, 9, 12, 12, 12, 11, 12, 10, 15, 15, 15, 12, 12, 44])
+            "Prior billable hours", "Prior rate ($/hr)", "Note", "Owner draw ($)"]
+    _header(ws, FIRST_ROW - 1, cols, [9, 28, 12, 8, 8, 14, 9, 12, 12, 12, 11, 12, 10, 15, 15, 15, 12, 12, 44, 15])
+    from dashboard.budget_model import person_draws
+
+    _, draw_links = person_draws(people, drivers)
     for i, r in enumerate(people.itertuples(index=False)):
         row = FIRST_ROW + i
         fringe = getattr(r, "fringe_pct", np.nan)
@@ -177,12 +180,14 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
         _put(ws, row, 17, r.prior_billable_hours, BLACK, NUM)
         _put(ws, row, 18, r.prior_rate, BLACK, RATE)
         _put(ws, row, 19, r.note or "")
+        links = draw_links[i]
+        _put(ws, row, 20, "=" + "+".join(f"Drivers!I{FIRST_ROW + j}" for j in links) if links else 0, GREEN, USD)
     for row in range(FIRST_ROW, last + 1):
         _put(ws, row, 12, f"=SUM('Hours by Person'!C{row}:N{row})", GREEN, NUM)
         _put(ws, row, 13, f'=IF(N(I{row})>0,L{row}/I{row},"")', BLACK, PCT)
         _put(ws, row, 14, f"=SUM('Revenue by Person'!C{row}:N{row})", GREEN, USD)
         _put(ws, row, 15, f"=SUM('Salary by Person'!C{row}:N{row})*(1+G{row})", GREEN, USD)
-        _put(ws, row, 16, f"=N{row}-O{row}", BLACK, USD)
+        _put(ws, row, 16, f"=N{row}-O{row}-N(T{row})", BLACK, USD)
     ws.cell(FIRST_ROW - 1, 9).comment = Comment(
         "Measuring-period Hours Expectation (employee_targets.csv or role default), prorated for start/end "
         "dates and approved leave in the budget year.", "Budget")
@@ -190,8 +195,10 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
         "Employer taxes, benefits, workers' comp and Insperity fees as a % of gross wages, from the last 12 "
         "months of Insperity payroll. People without Insperity data use the Assumptions default.", "Budget")
     ws.cell(FIRST_ROW - 1, 17).comment = Comment("Prior columns: last 12 months from Vantagepoint labor detail.", "Budget")
+    ws.cell(FIRST_ROW - 1, 20).comment = Comment(
+        "Linked owner-draw rows on the Drivers sheet. Contribution = revenue - salary & fringe - owner draw.", "Budget")
     _put(ws, last + 1, 2, "Total", BOLD)
-    for c in (6, 8, 9, 12, 14, 15, 16):
+    for c in (6, 8, 9, 12, 14, 15, 16, 20):
         _put(ws, last + 1, c, f"=SUM({L(c)}{FIRST_ROW}:{L(c)}{last})", BOLD,
              NUM if c in (8, 9, 12) else USD).border = TOP
     _put(ws, last + 1, 13, f'=IF(I{last + 1}>0,SUMIFS(L{FIRST_ROW}:L{last},I{FIRST_ROW}:I{last},">0")/I{last + 1},"")',
