@@ -91,11 +91,26 @@ def _prior_hours() -> tuple[pd.DataFrame | None, str]:
     return None, ""
 
 
+def _leave() -> pd.DataFrame | None:
+    if not table_exists("employee_leave"):
+        return None
+    cols = set(query("SELECT * FROM employee_leave LIMIT 0").columns)
+    extra = ", leave_weeks, measuring_period_end_year" if "leave_weeks" in cols else ""
+    return query("SELECT name_key, employee_number, leave_start, leave_end, percent_away, leave_type, full_name"
+                 f"{extra} FROM employee_leave")
+
+
+def _insperity() -> pd.DataFrame:
+    roster = query("SELECT * FROM insperity_roster") if table_exists("insperity_roster") else None
+    payroll = query("SELECT * FROM insperity_payroll") if table_exists("insperity_payroll") else None
+    return bm.insperity_summary(roster, payroll)
+
+
 def _default_people(a: bm.Assumptions, drivers: pd.DataFrame) -> pd.DataFrame:
     cost = _latest("employee_cost_rates", "employee_number, full_name, status, labor_type, job_cost_type, job_cost_rate")
     targets = _latest("employee_targets", "*")
     prior, _ = _prior_hours()
-    return bm.default_people(cost, targets, prior, a, drivers)
+    return bm.default_people(cost, targets, prior, a, drivers, leave=_leave(), insperity=_insperity())
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +120,11 @@ def _init_state(year: int, baseline: pd.DataFrame, force_defaults: bool = False)
     if st.session_state.get(SS + "year") == year and not force_defaults:
         return
     a, people, overhead, drivers = (None, None, None, None) if force_defaults else bm.load_inputs(year)
-    a = a or bm.Assumptions(year=year)
+    if a is None:
+        a = bm.Assumptions(year=year)
+        firm_fringe = bm.insperity_fringe(_insperity())
+        if firm_fringe:
+            a.fringe_pct = round(firm_fringe, 4)
     if drivers is None:
         drivers = bm.guess_draw_drivers(_gl())
     if people is None:
@@ -208,6 +227,17 @@ def _assumptions_tab(a: bm.Assumptions) -> bm.Assumptions:
                                  key=k + "fringe",
                                  help="Fringe only. Not the 103.4% loaded burden, which also includes overhead "
                                       "that this budget lists line by line.") / 100
+        ins = _insperity()
+        firm = bm.insperity_fringe(ins)
+        if firm is not None:
+            s_ = ins.fillna(0)
+            g = s_["gross_12m"].sum()
+            st.caption(
+                f"Insperity, last 12 months: **{firm:.1%}** of gross wages (taxes {s_['taxes_12m'].sum() / g:.1%}, "
+                f"benefits {s_['benefits_12m'].sum() / g:.1%}, workers' comp {s_['wc_12m'].sum() / g:.1%}, "
+                f"fees {s_['fees_12m'].sum() / g:.1%}). Each person uses their own % where Insperity has it; "
+                "this default covers everyone else."
+            )
     with c3:
         growth = st.number_input("Default overhead change %", value=a.overhead_growth_pct * 100, step=0.5,
                                  key=k + "growth", help="Starting % for overhead lines. Change any line on the Overhead tab.") / 100
@@ -272,8 +302,10 @@ def _people_tab(a: bm.Assumptions, drivers: pd.DataFrame) -> pd.DataFrame:
     _, hours_source = _prior_hours()
     st.subheader("People plan")
     st.caption(
-        "One row per person: who's on staff, when, pay, billable hours and rate. Prefilled from Vantagepoint "
-        f"(cost rates, hour targets{', and the last 12 months of ' + hours_source if hours_source else ''}). "
+        "One row per person: who's on staff, when, pay, billable hours and rate. Timekeepers are budgeted to meet "
+        "their measuring-period Hours Expectation, prorated for start/end dates and approved leave. Prefilled from "
+        f"Vantagepoint (hour targets{', the last 12 months of ' + hours_source if hours_source else ''}) and "
+        "Insperity (salaries and fringe, when loaded). "
         "Add a row for each planned hire with a start month. Owners paid by draw show $0 salary."
     )
     base = bm.apply_draw_rule(st.session_state[SS + "people"], drivers)
@@ -288,7 +320,16 @@ def _people_tab(a: bm.Assumptions, drivers: pd.DataFrame) -> pd.DataFrame:
             "start_month": st.column_config.NumberColumn("Start", min_value=1, max_value=12, default=1, step=1),
             "end_month": st.column_config.NumberColumn("End", min_value=1, max_value=12, default=12, step=1),
             "annual_salary": st.column_config.NumberColumn("Annual salary", format="$%,.0f", min_value=0.0),
-            "billable_hours": st.column_config.NumberColumn("Billable hrs", format="%,.0f", min_value=0.0),
+            "fringe_pct": st.column_config.NumberColumn(
+                "Fringe %", format="percent", min_value=0.0, max_value=2.0, default=a.fringe_pct,
+                help="Employer taxes, benefits, workers' comp and Insperity fees as a % of salary"),
+            "billable_hours": st.column_config.NumberColumn(
+                "Billable hrs/yr", format="%,.0f", min_value=0.0,
+                help="Annual rate, spread over the months on staff. Prefilled so timekeepers meet their target."),
+            "hours_target": st.column_config.NumberColumn(
+                "Target hrs", format="%,.0f", min_value=0.0,
+                help="Measuring-period Hours Expectation, prorated for start/end dates and approved leave in the "
+                     "budget year. Type one in for a new hire."),
             "bill_rate": st.column_config.NumberColumn("Rate $/hr", format="$%,.0f", min_value=0.0),
             "realization_pct": st.column_config.NumberColumn("Realization", format="percent", min_value=0.0,
                                                              max_value=1.5, default=a.realization_pct),
@@ -300,6 +341,22 @@ def _people_tab(a: bm.Assumptions, drivers: pd.DataFrame) -> pd.DataFrame:
     edited = edited.dropna(subset=["name"]).reset_index(drop=True)
     edited["realization_pct"] = pd.to_numeric(edited["realization_pct"], errors="coerce").fillna(a.realization_pct)
     edited["include"] = edited["include"].fillna(True)
+    edited["fringe_pct"] = pd.to_numeric(edited["fringe_pct"], errors="coerce").fillna(a.fringe_pct)
+
+    # Timekeepers vs their measuring-period target
+    _, _, hrs = bm.people_monthly(edited, a)
+    tgt = pd.to_numeric(edited["hours_target"], errors="coerce")
+    inc = edited["include"].astype(bool)
+    has_t = inc & (tgt > 0)
+    if has_t.any():
+        budget_h = pd.Series(hrs.sum(axis=1), index=edited.index)
+        short = has_t & (budget_h < tgt * 0.995)
+        st.caption(f"{int(has_t.sum())} timekeepers with a target: {budget_h[has_t].sum():,.0f} budgeted hours vs "
+                   f"{tgt[has_t].sum():,.0f} target ({budget_h[has_t].sum() / tgt[has_t].sum():.0%}).")
+        if short.any():
+            st.warning("Budgeted below their measuring-period target: " + ", ".join(
+                f"{n} ({b:,.0f} of {t:,.0f})" for n, b, t in
+                zip(edited.loc[short, "name"], budget_h[short], tgt[short])))
     missing = edited[edited["include"].astype(bool) & (pd.to_numeric(edited["billable_hours"], errors="coerce") > 0)
                      & (pd.to_numeric(edited["bill_rate"], errors="coerce").fillna(0) == 0)]
     if not missing.empty:
@@ -355,8 +412,12 @@ def _summary_tab(res: bm.BudgetResult, a: bm.Assumptions):
         {"label": "Left after draws", "value": fmt_currency(k["after_draws"], short=True),
          "help": "Net income less owner draws. Negative means draws exceed profit."},
     ])
+    tk = ""
+    if k["timekeepers"]:
+        tk = (f" · timekeepers at {k['target_budget_hours'] / k['target_hours']:.0%} of their measuring-period "
+              f"target" + (f" ({k['below_target']} below)" if k["below_target"] else ""))
     st.caption(f"{k['headcount']} people in the plan · {k['billable_hours']:,.0f} billable hours · "
-               f"net margin {k['net_margin']:.1%}")
+               f"net margin {k['net_margin']:.1%}{tk}")
     if k["after_draws"] < 0:
         st.warning(f"Owner draws exceed budgeted net income by {_money_md(-k['after_draws'])}.")
 
@@ -388,6 +449,8 @@ def _summary_tab(res: bm.BudgetResult, a: bm.Assumptions):
         st.dataframe(ppl, hide_index=True, use_container_width=True, column_config={
             "name": "Name", "role": "Role",
             "billable_hours": st.column_config.NumberColumn("Billable hrs", format="%,.0f"),
+            "hours_target": st.column_config.NumberColumn("Target hrs", format="%,.0f"),
+            "pct_of_target": st.column_config.NumberColumn("% of target", format="percent"),
             "revenue": st.column_config.NumberColumn("Revenue", format="$%,.0f"),
             "salary_and_fringe": st.column_config.NumberColumn("Salary + fringe", format="$%,.0f"),
             "contribution": st.column_config.NumberColumn("Contribution", format="$%,.0f",

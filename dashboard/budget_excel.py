@@ -85,7 +85,7 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
         ("", BLACK),
         ("How it works", BOLD),
         ("Fee revenue = billable hours x seasonality weight x billing rate x realization, for each month a person is on staff.", BLACK),
-        ("Salaries = annual salary / 12 for each month on staff, with the raise from the raise month. Fringe % is added on top.", BLACK),
+        ("Salaries = annual salary / 12 for each month on staff, with the raise from the raise month. Each person's fringe % (actual Insperity employer cost when loaded) is added on top.", BLACK),
         ("Overhead = prior-year actual x (1 + change %), or a fixed amount if you type one, spread evenly over 12 months.", BLACK),
         ("Prior-year revenue and payroll lines marked 'People plan' are replaced by the people plan, so they aren't counted twice.", BLACK),
         ("Drivers = lines you enter: owner draws, guaranteed payments, bonuses, leases, capex. Owner draws sit below net income.", BLACK),
@@ -93,7 +93,8 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
         ("What to edit", BOLD),
         ("Blue text = inputs you can change. Black = formulas. Green = links to another sheet. Yellow = key assumptions.", BLACK),
         ("Assumptions: rates, raises, fringe, realization, seasonality.", BLACK),
-        ("People: Include (Y/N), start/end month, salary, billable hours, rate, realization. Add a row for a new hire.", BLACK),
+        ("People: Include (Y/N), start/end month, salary, fringe %, billable hours, rate, realization. Add a row for a new hire.", BLACK),
+        ("Timekeepers are budgeted to meet their measuring-period Hours Expectation, prorated for start/end dates and leave. People shows each one's % of target.", BLACK),
         ("Overhead: Treatment, Change %, or a Fixed amount (overrides Change %).", BLACK),
         ("Drivers: amount, basis (Per month / Per year / One-time), start and end month. Section 'Owner draws' goes below net income.", BLACK),
         ("To add people, overhead lines or drivers, insert rows inside each table (above its last row) so the totals pick them up.", BLACK),
@@ -113,7 +114,7 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
         ("Rate increase month (1-12)", a.rate_increase_month, "0", "New rates apply from this month"),
         ("Salary increase", a.salary_increase_pct, PCT, "Annual raise"),
         ("Salary increase month (1-12)", a.salary_increase_month, "0", "Raises apply from this month"),
-        ("Payroll taxes & benefits (fringe)", a.fringe_pct, PCT, "On top of salaries. Fringe only, not overhead."),
+        ("Payroll taxes & benefits (fringe)", a.fringe_pct, PCT, "Default for people without Insperity data (People column G). Fringe only, not overhead."),
         ("Default realization", a.realization_pct, PCT, "Billed / standard value, for new people rows"),
         ("Default overhead change", a.overhead_growth_pct, PCT, "For prior-year overhead lines"),
     ]
@@ -128,7 +129,6 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
         ref[label] = f"Assumptions!$B${r}"
     A_RATE, A_RATE_M = ref["Billing rate increase"], ref["Rate increase month (1-12)"]
     A_RAISE, A_RAISE_M = ref["Salary increase"], ref["Salary increase month (1-12)"]
-    A_FRINGE = ref["Payroll taxes & benefits (fringe)"]
 
     sr = 4 + len(items) + 2
     _put(ws, sr, 1, "Seasonality (share of annual billable hours by month)", BOLD)
@@ -151,42 +151,68 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
     n = len(people)
     last = FIRST_ROW + max(n, 1)  # one blank row at the end for inserting
     _put(ws, 1, 1, "People plan", TITLE)
-    _put(ws, 2, 1, "Example of a new hire row: Y | New Associate | Attorney | 4 | 12 | 150000 | 1900 | 325 | 90%",
+    _put(ws, 2, 1, "Example of a new hire row: Y | New Associate | Attorney | 4 | 12 | 150000 | 20% | 2117 | 1425 "
+                   "| 325 | 90%   (billable hours = annual rate; it's spread over the months on staff)",
          Font(name=FONT, italic=True, color="808080"))
-    cols = ["Include (Y/N)", "Name", "Role", "Start month", "End month", "Annual salary ($)",
-            "Billable hours (annual)", "Billing rate ($/hr)", "Realization", "Budget revenue ($)",
-            "Salary + fringe ($)", "Contribution ($)", "Prior billable hours", "Prior rate ($/hr)", "Note"]
-    _header(ws, FIRST_ROW - 1, cols, [9, 28, 12, 8, 8, 14, 12, 12, 11, 15, 15, 15, 12, 12, 40])
+    cols = ["Include (Y/N)", "Name", "Role", "Start month", "End month", "Annual salary ($)", "Fringe %",
+            "Billable hours (annual rate)", "Target hours (prorated)", "Billing rate ($/hr)", "Realization",
+            "Budget hours", "% of target", "Budget revenue ($)", "Salary + fringe ($)", "Contribution ($)",
+            "Prior billable hours", "Prior rate ($/hr)", "Note"]
+    _header(ws, FIRST_ROW - 1, cols, [9, 28, 12, 8, 8, 14, 9, 12, 12, 12, 11, 12, 10, 15, 15, 15, 12, 12, 44])
     for i, r in enumerate(people.itertuples(index=False)):
         row = FIRST_ROW + i
+        fringe = getattr(r, "fringe_pct", np.nan)
         _put(ws, row, 1, "Y" if bool(r.include) else "N", BLUE)
         _put(ws, row, 2, r.name, BLUE)
         _put(ws, row, 3, r.role or "", BLUE)
         _put(ws, row, 4, int(r.start_month or 1), BLUE, "0")
         _put(ws, row, 5, int(r.end_month or 12), BLUE, "0")
         _put(ws, row, 6, float(r.annual_salary or 0), BLUE, USD)
-        _put(ws, row, 7, float(r.billable_hours or 0), BLUE, NUM)
-        _put(ws, row, 8, float(r.bill_rate or 0), BLUE, RATE)
-        _put(ws, row, 9, float(r.realization_pct if pd.notna(r.realization_pct) else a.realization_pct), BLUE, PCT)
-        _put(ws, row, 10, f"=SUM('Revenue by Person'!C{row}:N{row})", GREEN, USD)
-        _put(ws, row, 11, f"=SUM('Salary by Person'!C{row}:N{row})*(1+{A_FRINGE})", GREEN, USD)
-        _put(ws, row, 12, f"=J{row}-K{row}", BLACK, USD)
-        _put(ws, row, 13, r.prior_billable_hours, BLACK, NUM)
-        _put(ws, row, 14, r.prior_rate, BLACK, RATE)
-        _put(ws, row, 15, r.note or "")
-    ws.cell(FIRST_ROW, 13).comment = Comment("Prior columns: last 12 months from Vantagepoint labor detail.", "Budget")
+        _put(ws, row, 7, float(fringe) if pd.notna(fringe) else float(a.fringe_pct), BLUE, PCT)
+        _put(ws, row, 8, float(r.billable_hours or 0), BLUE, NUM)
+        tgt = getattr(r, "hours_target", np.nan)
+        _put(ws, row, 9, float(tgt) if pd.notna(tgt) else None, BLUE, NUM)
+        _put(ws, row, 10, float(r.bill_rate or 0), BLUE, RATE)
+        _put(ws, row, 11, float(r.realization_pct if pd.notna(r.realization_pct) else a.realization_pct), BLUE, PCT)
+        _put(ws, row, 17, r.prior_billable_hours, BLACK, NUM)
+        _put(ws, row, 18, r.prior_rate, BLACK, RATE)
+        _put(ws, row, 19, r.note or "")
+    for row in range(FIRST_ROW, last + 1):
+        _put(ws, row, 12, f"=SUM('Hours by Person'!C{row}:N{row})", GREEN, NUM)
+        _put(ws, row, 13, f'=IF(N(I{row})>0,L{row}/I{row},"")', BLACK, PCT)
+        _put(ws, row, 14, f"=SUM('Revenue by Person'!C{row}:N{row})", GREEN, USD)
+        _put(ws, row, 15, f"=SUM('Salary by Person'!C{row}:N{row})*(1+G{row})", GREEN, USD)
+        _put(ws, row, 16, f"=N{row}-O{row}", BLACK, USD)
+    ws.cell(FIRST_ROW - 1, 9).comment = Comment(
+        "Measuring-period Hours Expectation (employee_targets.csv or role default), prorated for start/end "
+        "dates and approved leave in the budget year.", "Budget")
+    ws.cell(FIRST_ROW - 1, 7).comment = Comment(
+        "Employer taxes, benefits, workers' comp and Insperity fees as a % of gross wages, from the last 12 "
+        "months of Insperity payroll. People without Insperity data use the Assumptions default.", "Budget")
+    ws.cell(FIRST_ROW - 1, 17).comment = Comment("Prior columns: last 12 months from Vantagepoint labor detail.", "Budget")
     _put(ws, last + 1, 2, "Total", BOLD)
-    for c in (6, 7, 10, 11, 12):
-        _put(ws, last + 1, c, f"=SUM({L(c)}{FIRST_ROW}:{L(c)}{last})", BOLD, NUM if c == 7 else USD).border = TOP
+    for c in (6, 8, 9, 12, 14, 15, 16):
+        _put(ws, last + 1, c, f"=SUM({L(c)}{FIRST_ROW}:{L(c)}{last})", BOLD,
+             NUM if c in (8, 9, 12) else USD).border = TOP
+    _put(ws, last + 1, 13, f'=IF(I{last + 1}>0,SUMIFS(L{FIRST_ROW}:L{last},I{FIRST_ROW}:I{last},">0")/I{last + 1},"")',
+         BOLD, PCT).border = TOP
+    _put(ws, last + 2, 2, "Timekeepers budgeted below target", Font(name=FONT, italic=True))
+    _put(ws, last + 2, 13, f'=SUMPRODUCT((I{FIRST_ROW}:I{last}>0)*(A{FIRST_ROW}:A{last}="Y")'
+                           f'*(L{FIRST_ROW}:L{last}<I{FIRST_ROW}:I{last}*0.995))', BOLD, "0")
     dv = DataValidation(type="list", formula1='"Y,N"', allow_blank=True)
     ws.add_data_validation(dv)
     dv.add(f"A{FIRST_ROW}:A{last}")
     people_last = last
 
-    # ---------------- Revenue / Salary by person ----------------
-    for title, kind in (("Revenue by Person", "rev"), ("Salary by Person", "sal")):
+    # ---------------- Hours / Revenue / Salary by person ----------------
+    subtitles = {
+        "hrs": " (annual billable hours x seasonality, months on staff)",
+        "rev": " (hours x rate x rate increase x realization)",
+        "sal": " (before fringe)",
+    }
+    for title, kind in (("Hours by Person", "hrs"), ("Revenue by Person", "rev"), ("Salary by Person", "sal")):
         ws = wb.create_sheet(title)
-        _put(ws, 1, 1, title + (" (hours x weight x rate x realization)" if kind == "rev" else " (before fringe)"), TITLE)
+        _put(ws, 1, 1, title + subtitles[kind], TITLE)
         ws.cell(FIRST_ROW - 1, 1, "Name").font = HEADER
         ws.cell(FIRST_ROW - 1, 1).fill = HEADER_FILL
         ws.cell(FIRST_ROW - 1, 2, "Total").font = HEADER
@@ -197,22 +223,25 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
         for c in range(3, 15):
             ws.column_dimensions[L(c)].width = 12
         ws.freeze_panes = "C5"
+        fmt = NUM if kind == "hrs" else USD
         for row in range(FIRST_ROW, people_last + 1):
             _put(ws, row, 1, f'=IF(People!B{row}="","",People!B{row})', GREEN)
-            _put(ws, row, 2, f"=SUM(C{row}:N{row})", BLACK, USD)
+            _put(ws, row, 2, f"=SUM(C{row}:N{row})", BLACK, fmt)
             for i in range(12):
                 col = 3 + i
                 m = f"{L(col)}$3"
                 on = f'AND(People!$A{row}="Y",{m}>=People!$D{row},{m}<=People!$E{row})'
-                if kind == "rev":
-                    calc = (f"People!$G{row}*{season(m)}*People!$H{row}"
-                            f"*IF({m}>={A_RATE_M},1+{A_RATE},1)*People!$I{row}")
+                if kind == "hrs":
+                    f = f"=IF({on},People!$H{row}*{season(m)},0)"
+                elif kind == "rev":
+                    f = (f"='Hours by Person'!{L(col)}{row}*People!$J{row}"
+                         f"*IF({m}>={A_RATE_M},1+{A_RATE},1)*People!$K{row}")
                 else:
-                    calc = f"People!$F{row}/12*IF({m}>={A_RAISE_M},1+{A_RAISE},1)"
-                _put(ws, row, col, f"=IF({on},{calc},0)", BLACK, USD)
+                    f = f"=IF({on},People!$F{row}/12*IF({m}>={A_RAISE_M},1+{A_RAISE},1),0)"
+                _put(ws, row, col, f, BLACK, fmt)
         _put(ws, people_last + 1, 1, "Total", BOLD)
         for c in range(2, 15):
-            _put(ws, people_last + 1, c, f"=SUM({L(c)}{FIRST_ROW}:{L(c)}{people_last})", BOLD, USD).border = TOP
+            _put(ws, people_last + 1, c, f"=SUM({L(c)}{FIRST_ROW}:{L(c)}{people_last})", BOLD, fmt).border = TOP
 
     # ---------------- Overhead ----------------
     ws = wb.create_sheet("Overhead")
@@ -373,7 +402,9 @@ def build_workbook(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame,
 
     section_title("Personnel")
     sal = line("  Salaries (people plan)", lambda i, col: f"='Salary by Person'!{L(3 + i)}{people_last + 1}", font=GREEN)
-    fr = line("  Payroll taxes & benefits (fringe)", lambda i, col: f"={col}{sal}*{A_FRINGE}")
+    fr = line("  Payroll taxes & benefits", lambda i, col: (
+        f"=SUMPRODUCT('Salary by Person'!{L(3 + i)}{FIRST_ROW}:{L(3 + i)}{people_last},"
+        f"People!$G${FIRST_ROW}:$G${people_last})"))
     pers_rows = [sal, fr] + drv_line_rows("Personnel")
     payroll_prior = (f'=SUMIFS({ov_rng("F")},{ov_rng("A")},"Expense",{ov_rng("E")},"{PEOPLE_PLAN}")'
                      f'+SUMIFS({ov_rng("F")},{ov_rng("A")},"COGS",{ov_rng("E")},"{PEOPLE_PLAN}")')

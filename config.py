@@ -110,6 +110,13 @@ SOURCE_FILE_PATTERNS = {
     # The firm's P&L (income statement) workbook -- monthly or annual
     # columns, one row per line item. Baseline for the Budget page's
     # overhead lines. See etl/parse_pl_workbook.py.
+    # Insperity (PEO) payroll exports: an employee roster / compensation
+    # report (salaries) and payroll register or invoice detail (gross wages
+    # plus employer taxes, benefits, workers' comp, fees). See
+    # etl/parse_insperity.py.
+    "insperity": ["*Insperity*.xlsx", "*Insperity*.csv", "*Payroll*Register*.xlsx", "*Payroll*Register*.csv",
+                  "*Payroll*Journal*.xlsx", "*Payroll*Journal*.csv", "*Employee*Roster*.xlsx", "*Employee*Roster*.csv",
+                  "*Compensation*.xlsx", "*Compensation*.csv"],
     "pl_workbook": [
         "*P&L*.xlsx", "*P & L*.xlsx", "*PnL*.xlsx", "*P_L*.xlsx",
         "*Profit*Loss*.xlsx", "*Income*Statement*.xlsx",

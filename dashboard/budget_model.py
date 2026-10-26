@@ -11,7 +11,10 @@ Hybrid method, for one calendar year (config.BUDGET_YEAR):
   months the person is on staff. New rates apply from the rate-increase
   month.
 - **Salaries + fringe** (people plan): annual salary / 12 for each month
-  on staff, with the raise from the raise month, plus fringe %.
+  on staff, with the raise from the raise month, plus each person's
+  fringe % (their actual Insperity employer cost when loaded).
+- **Hours**: each timekeeper is budgeted to meet their measuring-period
+  Hours Expectation, prorated for start/end dates and approved leave.
 - **Overhead and other lines**: prior-year actuals (P&L workbook, or the
   Vantagepoint GL if no P&L is loaded) x (1 + change %), or a fixed
   amount you type in, spread evenly across the year. Revenue and payroll
@@ -52,7 +55,7 @@ BASES = ["Per month", "Per year", "One-time"]
 
 PEOPLE_COLUMNS = [
     "include", "name", "employee_number", "role", "start_month", "end_month",
-    "annual_salary", "billable_hours", "bill_rate", "realization_pct",
+    "annual_salary", "fringe_pct", "billable_hours", "hours_target", "bill_rate", "realization_pct",
     "prior_billable_hours", "prior_rate", "note",
 ]
 OVERHEAD_COLUMNS = [
@@ -249,42 +252,124 @@ def is_draw_person(full_name: str, owners: set[str]) -> bool:
     return any(o == n or (o and re.search(rf"\b{re.escape(o)}\b", n)) for o in owners)
 
 
+def insperity_summary(roster: pd.DataFrame | None, payroll: pd.DataFrame | None) -> pd.DataFrame:
+    """One row per person (by name_key) from Insperity: annual_salary
+    (roster, else last 12 months' gross annualized), fringe_pct (employer
+    taxes + benefits + workers' comp + fees / gross, last 12 months),
+    active, plus the cost breakdown. Empty if no Insperity data."""
+    cols = ["name_key", "employee_name", "ins_salary", "ins_fringe_pct", "ins_active", "ins_term_date",
+            "gross_12m", "taxes_12m", "benefits_12m", "wc_12m", "fees_12m"]
+    frames = []
+    if payroll is not None and not payroll.empty:
+        pr = payroll.copy()
+        pr["check_date"] = pd.to_datetime(pr["check_date"])
+        pr = pr[pr["check_date"] > pr["check_date"].max() - pd.DateOffset(months=12)]
+        g = pr.groupby("name_key").agg(
+            employee_name=("employee_name", "last"), gross_12m=("gross_wages", "sum"),
+            taxes_12m=("employer_taxes", "sum"), benefits_12m=("employer_benefits", "sum"),
+            wc_12m=("workers_comp", "sum"), fees_12m=("peo_fees", "sum"),
+            months=("check_date", lambda s: s.dt.to_period("M").nunique()), last_check=("check_date", "max"),
+        )
+        extra = g[["taxes_12m", "benefits_12m", "wc_12m", "fees_12m"]].sum(axis=1)
+        g["ins_fringe_pct"] = np.where(g["gross_12m"] > 0, extra / g["gross_12m"], np.nan)
+        g["pay_salary"] = g["gross_12m"] * 12 / g["months"].clip(lower=1)
+        g["paid_recently"] = g["last_check"] >= pr["check_date"].max() - pd.DateOffset(days=45)
+        frames.append(g)
+    out = pd.DataFrame(columns=cols).set_index("name_key")
+    if frames:
+        out = frames[0]
+    if roster is not None and not roster.empty:
+        ro = roster.drop_duplicates("name_key", keep="last").set_index("name_key")
+        out = out.join(ro[["employee_name", "annual_salary", "status", "term_date"]].rename(
+            columns={"employee_name": "roster_name"}), how="outer")
+        out["employee_name"] = out.get("employee_name", pd.Series(dtype=object)).fillna(out["roster_name"])
+        term = pd.to_datetime(out["term_date"], errors="coerce")
+        out["ins_active"] = ~out["status"].fillna("").str.contains("term|inactive|separat", case=False) & term.isna()
+        out["ins_term_date"] = term
+    else:
+        out["annual_salary"] = np.nan
+        out["ins_active"] = out["paid_recently"] if "paid_recently" in out else True
+        out["ins_term_date"] = pd.NaT
+    pay_salary = out["pay_salary"] if "pay_salary" in out else np.nan
+    out["ins_salary"] = pd.to_numeric(out["annual_salary"], errors="coerce").fillna(pay_salary)
+    for c in cols[1:]:
+        if c not in out:
+            out[c] = np.nan
+    return out.reset_index()[cols]
+
+
+def insperity_fringe(summary: pd.DataFrame) -> float | None:
+    """Firm-wide employer cost on top of gross wages, last 12 months."""
+    if summary is None or summary.empty or summary["gross_12m"].fillna(0).sum() <= 0:
+        return None
+    s = summary.fillna(0)
+    return float((s["taxes_12m"] + s["benefits_12m"] + s["wc_12m"] + s["fees_12m"]).sum() / s["gross_12m"].sum())
+
+
+def year_availability(year: int, start_date=None, end_date=None, leaves=()) -> tuple[float, float, int, int]:
+    """(share of the year's workdays available, share employed, first month,
+    last month) for a timekeeper in calendar `year`, using the measuring
+    period's own rules (Mon-Fri workdays, start/end dates, approved leave
+    weighted by percent away)."""
+    from dashboard.hours_credit import availability
+
+    ys, ye = pd.Timestamp(year, 1, 1), pd.Timestamp(year, 12, 31)
+    avail = availability(ys, ye, start_date, end_date, leaves)
+    employed = availability(ys, ye, start_date, end_date)
+    n = len(avail) or 1
+    on = employed[employed > 0]
+    first = int(on.index.min().month) if len(on) else 1
+    last = int(on.index.max().month) if len(on) else 12
+    return float(avail.sum()) / n, float(employed.sum()) / n, first, last
+
+
 def default_people(
     cost_rates: pd.DataFrame,
     targets: pd.DataFrame | None,
     prior_hours: pd.DataFrame | None,
     a: Assumptions,
     drivers: pd.DataFrame | None = None,
+    leave: pd.DataFrame | None = None,
+    insperity: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Starter people plan from Vantagepoint.
+    """Starter people plan from Vantagepoint and Insperity.
 
-    - Salary: Salary-type cost rate x 12 (it's monthly); Hourly-type rate x
-      prior-year total hours (or 2,080).
-    - Hours: the person's billable target (employee_targets.csv), else the
-      role default, else last 12 months' billable hours.
+    - Hours: each timekeeper is budgeted to meet their measuring-period
+      Hours Expectation -- their own target from employee_targets.csv, else
+      the role default (1,900 / 1,600) -- prorated the same way the
+      Measuring Period page does, for start/end dates and approved leave
+      in the budget year. People without a target get last 12 months'
+      billable hours.
+    - Salary: Insperity (roster salary, else last 12 months' gross,
+      annualized); else the Vantagepoint cost rate (Salary type x 12,
+      Hourly type x prior hours or 2,080).
+    - Fringe: the person's own Insperity employer cost % (taxes, benefits,
+      workers' comp, fees / gross); else the firm-wide fringe assumption.
     - Rate: last 12 months' standard value / billable hours.
     - Anyone named in an owner-draw driver gets $0 salary -- the draw is
       their pay -- but keeps their billable revenue.
+    - Insperity employees missing from Vantagepoint (staff who don't keep
+      time) are added so their pay is in the budget.
     - Terminated or ended staff start unticked.
-    prior_hours columns: name_key or employee_number, billable_hours,
-    total_hours, standard_value.
     """
-    if cost_rates is None or cost_rates.empty:
-        return pd.DataFrame(columns=PEOPLE_COLUMNS)
+    from dashboard.hours_credit import _leaves_for, person_targets
     from etl.common import name_key
 
+    if cost_rates is None or cost_rates.empty:
+        cost_rates = pd.DataFrame(columns=["employee_number", "full_name", "status", "labor_type",
+                                           "job_cost_type", "job_cost_rate"])
     p = cost_rates.copy()
     p["name_key"] = p["full_name"].map(name_key)
     p["employee_number"] = p["employee_number"].astype(str)
+    tcols = ["target_type", "start_date", "end_date", "billable_target", "credit_cap", "total_target", "bonus_threshold"]
     if targets is not None and not targets.empty:
         t = targets.copy()
         t["employee_number"] = t["employee_number"].astype(str)
-        t = t.drop_duplicates("employee_number")[["employee_number", "target_type", "end_date", "billable_target"]]
+        t = t.drop_duplicates("employee_number")[["employee_number"] + [c for c in tcols if c in t.columns]]
         p = p.merge(t, on="employee_number", how="left")
-    else:
-        p["target_type"] = None
-        p["end_date"] = None
-        p["billable_target"] = np.nan
+    for c in tcols:
+        if c not in p.columns:
+            p[c] = np.nan
     if prior_hours is not None and not prior_hours.empty:
         ph = prior_hours.copy()
         on = "employee_number" if "employee_number" in ph.columns and ph["employee_number"].notna().any() else "name_key"
@@ -295,42 +380,82 @@ def default_people(
     else:
         p[["billable_hours", "total_hours", "standard_value"]] = np.nan
 
+    ins = insperity if insperity is not None and not insperity.empty else None
+    if ins is not None:
+        p = p.merge(ins, on="name_key", how="left")
+        # Insperity employees with no Vantagepoint record (e.g. admin staff).
+        extra = ins[~ins["name_key"].isin(p["name_key"]) & ins["ins_active"].fillna(True).astype(bool)]
+        if not extra.empty:
+            add = extra.assign(full_name=extra["employee_name"], employee_number="", status="Active",
+                               labor_type="Staff (Insperity only)", job_cost_type="Salary", job_cost_rate=0.0)
+            p = pd.concat([p, add], ignore_index=True)
+
     owners = draw_people(drivers)
-    rows = []
     year_start = pd.Timestamp(a.year, 1, 1)
-    for r in p.itertuples(index=False):
-        role = config.resolve_role(getattr(r, "target_type", None))
-        status = str(getattr(r, "status", "") or "")
-        end = pd.to_datetime(getattr(r, "end_date", None), errors="coerce")
-        active = not re.search(r"terminat|inactive", status, re.I) and (pd.isna(end) or end >= year_start)
-        rate = float(r.job_cost_rate or 0)
-        prior_total = float(r.total_hours) if pd.notna(r.total_hours) else np.nan
-        if str(r.job_cost_type).lower().startswith("hour"):
+    rows = []
+    for _, r in p.iterrows():
+        role = config.resolve_role(r.get("target_type"))
+        status = str(r.get("status") or "")
+        end = pd.to_datetime(r.get("end_date"), errors="coerce")
+        ins_term = pd.to_datetime(r.get("ins_term_date"), errors="coerce")
+        active = (not re.search(r"terminat|inactive", status, re.I) and (pd.isna(end) or end >= year_start)
+                  and (pd.isna(ins_term) or ins_term >= year_start))
+        notes = []
+
+        # Salary
+        rate = float(r.get("job_cost_rate") or 0)
+        prior_total = float(r["total_hours"]) if pd.notna(r.get("total_hours")) else np.nan
+        if pd.notna(r.get("ins_salary")) and r.get("ins_salary") > 0:
+            salary = float(r["ins_salary"])
+            notes.append("Salary from Insperity")
+        elif str(r.get("job_cost_type")).lower().startswith("hour"):
             salary = rate * (prior_total if prior_total and prior_total > 0 else 2080)
         else:
             salary = rate * 12
-        note = ""
-        if is_draw_person(r.full_name, owners):
+        fringe = float(r["ins_fringe_pct"]) if pd.notna(r.get("ins_fringe_pct")) else a.fringe_pct
+        if is_draw_person(r.get("full_name"), owners):
             salary = 0.0
-            note = "Paid by owner draw (Budget drivers)"
-        prior_b = float(r.billable_hours) if pd.notna(r.billable_hours) else np.nan
-        target = r.billable_target if pd.notna(r.billable_target) else config.BILLABLE_HOUR_TARGETS.get(role)
-        hours = float(target) if target is not None and pd.notna(target) else (prior_b if pd.notna(prior_b) else 0.0)
-        prior_rate = (float(r.standard_value) / prior_b) if pd.notna(r.standard_value) and prior_b and prior_b > 0 else np.nan
+            notes.insert(0, "Paid by owner draw (Budget drivers)")
+
+        # Hours: meet the measuring-period target, prorated for the budget year.
+        prior_b = float(r["billable_hours"]) if pd.notna(r.get("billable_hours")) else np.nan
+        tgt = person_targets(pd.Series({**r.to_dict(), "role": role}))
+        expectation = tgt["expectation"]
+        start_m, end_m = 1, 12
+        hours_target = np.nan
+        if expectation:
+            pr = pd.Series({"employee_number": r.get("employee_number"), "name_key": r.get("name_key")})
+            avail, employed, start_m, end_m = year_availability(
+                a.year, r.get("start_date"), r.get("end_date"), _leaves_for(pr, leave))
+            hours_target = expectation * avail
+            # Billable hours is an annual rate the model spreads over the
+            # months on staff by seasonality, so scale it so those months
+            # add up to exactly the prorated target.
+            w = normalized_weights(a.seasonality)[start_m - 1:end_m].sum()
+            hours = hours_target / w if w > 0 else 0.0
+            if avail < employed - 1e-9:
+                notes.append(f"Target prorated for leave ({1 - avail / employed:.0%} of the year away)")
+        else:
+            hours = prior_b if pd.notna(prior_b) else 0.0
+        prior_rate = (float(r["standard_value"]) / prior_b) if pd.notna(r.get("standard_value")) and prior_b and prior_b > 0 else np.nan
         if hours > 0 and pd.isna(prior_rate):
-            note = (note + "; " if note else "") + "No prior rate found -- enter one"
+            notes.append("No prior rate found -- enter one")
         rows.append({
-            "include": bool(active), "name": r.full_name, "employee_number": r.employee_number,
-            "role": role or (getattr(r, "labor_type", None) or ""),
-            "start_month": 1, "end_month": 12,
-            "annual_salary": round(salary, 2), "billable_hours": round(hours, 1),
+            "include": bool(active), "name": r.get("full_name"), "employee_number": r.get("employee_number") or "",
+            "role": role or (r.get("labor_type") or ""),
+            "start_month": start_m, "end_month": end_m,
+            "annual_salary": round(salary, 2), "fringe_pct": round(fringe, 4),
+            "billable_hours": round(hours, 1),
+            "hours_target": round(hours_target, 1) if pd.notna(hours_target) else np.nan,
             "bill_rate": round(prior_rate, 2) if pd.notna(prior_rate) else 0.0,
             "realization_pct": a.realization_pct,
             "prior_billable_hours": round(prior_b, 1) if pd.notna(prior_b) else np.nan,
             "prior_rate": round(prior_rate, 2) if pd.notna(prior_rate) else np.nan,
-            "note": note,
+            "note": "; ".join(notes),
         })
     out = pd.DataFrame(rows, columns=PEOPLE_COLUMNS)
+    if out.empty:
+        return out
     return out.sort_values(["include", "role", "name"], ascending=[False, True, True]).reset_index(drop=True)
 
 
@@ -468,7 +593,8 @@ def compute(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame, driver
 
     # Personnel
     salaries = add("line", "Personnel", "Salaries (people plan)", sal.sum(axis=0))
-    fringe = add("line", "Personnel", f"Payroll taxes & benefits ({a.fringe_pct:.1%})", sal.sum(axis=0) * a.fringe_pct)
+    fringe_i = _num(people["fringe_pct"], a.fringe_pct) if len(people) else np.zeros(0)
+    fringe = add("line", "Personnel", "Payroll taxes & benefits", (sal * fringe_i[:, None]).sum(axis=0))
     pers_drv = drv_lines("Personnel", "Personnel")
     personnel = add("total", "Personnel", "Total personnel", salaries + fringe + pers_drv, prior_sum(replaced_pay))
 
@@ -497,17 +623,25 @@ def compute(a: Assumptions, people: pd.DataFrame, overhead: pd.DataFrame, driver
 
     pnl = pd.DataFrame(rows)
 
-    p_rev, p_sal = rev.sum(axis=1), sal.sum(axis=1) * (1 + a.fringe_pct)
+    p_rev, p_sal = rev.sum(axis=1), sal.sum(axis=1) * (1 + fringe_i)
+    target = pd.to_numeric(people["hours_target"], errors="coerce").to_numpy(dtype=float) if len(people) else np.zeros(0)
     ppl = pd.DataFrame({
         "name": people["name"].to_numpy() if len(people) else [],
         "role": people["role"].to_numpy() if len(people) else [],
         "included": people["include"].fillna(False).astype(bool).to_numpy() if len(people) else [],
-        "billable_hours": hrs.sum(axis=1), "revenue": p_rev, "salary_and_fringe": p_sal,
+        "billable_hours": hrs.sum(axis=1), "hours_target": target,
+        "pct_of_target": np.where(target > 0, hrs.sum(axis=1) / np.where(target > 0, target, 1), np.nan),
+        "revenue": p_rev, "salary_and_fringe": p_sal,
         "contribution": p_rev - p_sal,
     })
     ppl = ppl[ppl["included"]].drop(columns="included")
     total_rev_y = float(total_rev.sum())
+    with_target = ppl[ppl["hours_target"] > 0]
     kpis = {
+        "timekeepers": int(len(with_target)),
+        "below_target": int((with_target["pct_of_target"] < 0.995).sum()),
+        "target_hours": float(with_target["hours_target"].sum()),
+        "target_budget_hours": float(with_target["billable_hours"].sum()),
         "revenue": total_rev_y,
         "expenses": float(total_exp.sum()),
         "net_income": float(net.sum()),

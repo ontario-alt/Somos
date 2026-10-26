@@ -49,6 +49,7 @@ from etl import (
     parse_employee_cost,
     parse_employee_targets,
     parse_gl,
+    parse_insperity,
     parse_labor_detail,
     parse_leave,
     parse_matter_earnings,
@@ -71,11 +72,12 @@ _TEXT_COLUMNS = {
     "ar_comment", "matter_code", "employee_name", "invoice_number", "entity", "check_ref_no",
     "client_name_confidence", "target_type", "employee_number", "name_key", "matter_name",
     "labor_code", "billing_status", "leave_type", "note", "sheet", "category", "account_number", "line_item", "section", "hours_category", "role_hint", "staff_group", "designation",
+    "employee_id", "pay_type", "pay_frequency", "status", "department",
 }
 # Optional date columns that are often entirely blank (nobody joined or
 # left mid-period, no open-ended leave) -- an all-None column would
 # otherwise land in DuckDB with no usable type.
-_DATE_COLUMNS = {"start_date", "end_date", "leave_start", "leave_end"}
+_DATE_COLUMNS = {"start_date", "end_date", "leave_start", "leave_end", "hire_date", "term_date"}
 # Optional dollar columns (labor detail exports vary in which extensions
 # they carry) -- forced to float so an all-blank column doesn't land as
 # INTEGER and then reject real values on a later upsert.
@@ -83,6 +85,7 @@ _FLOAT_COLUMNS = {
     "leave_weeks", "measuring_period_end_year",
     "standard_value", "billed_amount", "cost_amount", "billable_target", "credit_cap", "total_target", "bonus_threshold",
     "billable_requirement", "total_requirement",
+    "annual_salary", "pay_rate", "employer_taxes", "employer_benefits", "workers_comp", "peo_fees",
 }
 
 
@@ -311,6 +314,17 @@ def build(snapshot_date: date | None = None) -> Path:
     if pl_rows:
         con.execute("DROP TABLE IF EXISTS pl_actuals")
     _create_table(con, "pl_actuals", pl_rows, snapshot_date, snapshot_date_col="period_end")
+
+    # --- Insperity payroll (salaries + employer cost, for the Budget page) --
+    # Re-read in full every run, so rebuilt rather than upserted.
+    ins_roster, ins_payroll = parse_insperity.parse()
+    parse_insperity.write_processed(ins_roster, ins_payroll)
+    if ins_roster:
+        con.execute("DROP TABLE IF EXISTS insperity_roster")
+    _create_table(con, "insperity_roster", ins_roster, snapshot_date)
+    if ins_payroll:
+        con.execute("DROP TABLE IF EXISTS insperity_payroll")
+    _create_table(con, "insperity_payroll", ins_payroll, snapshot_date, snapshot_date_col="check_date")
 
     con.close()
     logger.info("Warehouse build complete -> %s", config.WAREHOUSE_PATH)

@@ -174,11 +174,19 @@ hybrid method. The logic is in `dashboard/budget_model.py`.
 
 | Part | How it's budgeted | Prefilled from |
 |---|---|---|
-| Fee revenue | billable hours x seasonality x rate x realization, per person, for the months they're on staff | hour targets (`employee_targets.csv` / role defaults), last 12 months of labor detail for rates |
-| Salaries + fringe | annual salary / 12 per month on staff, raise from the raise month, + fringe % (16.4%) | Employee Cost Rate Details (salary rate x 12, hourly rate x hours) |
+| Fee revenue | billable hours x seasonality x rate x realization, per person, for the months they're on staff | timekeeper targets (below), last 12 months of labor detail for rates |
+| Salaries + fringe | annual salary / 12 per month on staff, raise from the raise month, + each person's fringe % | Insperity (salary, and actual employer taxes + benefits + workers' comp + fees as a % of gross); else Employee Cost Rate Details and a 16.4% default |
 | Overhead and other lines | prior-year actual x (1 + change %), or a fixed amount | the P&L workbook, else monthly Vantagepoint trial balances |
 | Budget drivers | amounts you enter: per month, per year or one-time, between a start and end month | GL equity accounts named "draw" / "distribution" |
 
+- **Timekeepers meet their target.** Each timekeeper's billable hours
+  are set to their measuring-period Hours Expectation (their own target in
+  `employee_targets.csv`, else 1,900 / 1,600), prorated for the budget year
+  the same way the Measuring Period page does: start/end dates and approved
+  leave in `leave.csv`. The People tab and Excel show budgeted hours, target
+  and % of target, and flag anyone budgeted below. The target includes pro
+  bono and capped creditable time, so budgeting all of it as billable is
+  the optimistic case; lower anyone's hours to plan for that.
 - **No double counting.** Prior-year revenue and payroll lines (salaries,
   payroll taxes, benefits...) are marked *People plan* and replaced by the
   people plan. Change any line's treatment on the Overhead tab.
@@ -194,6 +202,21 @@ hybrid method. The logic is in `dashboard/budget_model.py`.
 - **Excel.** *Save & export* downloads a workbook with live formulas
   (Assumptions, People, Revenue/Salary by Person, Overhead, Drivers,
   Budget P&L). Blue cells are inputs; every total recalculates in Excel.
+
+**Insperity.** Save Insperity exports in the raw data folder with
+"Insperity", "Payroll Register", "Payroll Journal", "Employee Roster" or
+"Compensation" in the name (`etl/parse_insperity.py`). Two kinds are read:
+a roster / compensation report (one row per employee: annual salary or pay
+rate + pay type/frequency, status, dates) and a payroll register or invoice
+detail (one row per employee per pay date: gross wages plus employer taxes,
+benefits, 401k match, workers' comp and service fees). Employee-side
+deductions and withholdings are ignored. Names are matched to Vantagepoint
+with the same name rules as everywhere else (add `name_aliases.csv` rows
+for mismatches); Insperity employees with no Vantagepoint record (staff who
+don't keep time) are added to the people plan. The build log lists which
+column went where -- **not yet verified against a real Insperity export**,
+so check that line and the employer-cost % on the Assumptions tab the first
+time.
 
 **P&L workbook.** Save it in the raw data folder with "P&L", "PnL",
 "Profit Loss" or "Income Statement" in the name (`etl/parse_pl_workbook.py`).
@@ -256,6 +279,7 @@ same command either way; the weekly page just reads whatever's newest.
 | Labor detail (time entries) | Parsed (`etl/parse_labor_detail.py`). **Not yet verified against a real export.** It was built from Vantagepoint's standard labor fields and tested on synthetic data, so check the build log's hours and pro bono totals against Vantagepoint the first time. This is the preferred source for the measuring-period scorecard (pro bono split, monthly pace) and for timekeeper and practice-group profitability. |
 | Monthly Hours Report workbook | Parsed (`etl/parse_monthly_hours_workbook.py`) from the firm's hand-built per-timekeeper workbook. It was verified against the FY24 sample: each person's 12 months reconcile to the workbook's own totals row. It backfills closed measuring periods for the scorecard and the 2-year promotion lookback. |
 | P&L workbook | Parsed (`etl/parse_pl_workbook.py`) into `pl_actuals`, the Budget page's prior-year baseline. Built for common QuickBooks / hand-built layouts; not yet verified against the firm's file. |
+| Insperity payroll | Parsed (`etl/parse_insperity.py`) into `insperity_roster` and `insperity_payroll`: salaries and employer cost for the Budget page. Matches columns by name; not yet verified against a real export. |
 | Approved leave | Hand-maintained `reference/leave.csv` (`etl/parse_leave.py`) and used to prorate targets. |
 | Timekeeper hours (measuring period) | Parsed (`etl/parse_timekeeper_hours.py`) from the "All Timekeepers Hours" export -- per-employee, per-entity hours (total/billable/credited/PTO/HOL) for the current fiscal year. Powers the Measuring Period page's hours-required-individuals-by-entity tracker: now the *fallback* hours source for the creditable-hours scorecard when no labor detail export is loaded (Credited Hours treated as pro bono, capped at 75). Hours-to-date, not a final figure -- re-upload the same export any time (e.g. month-end close) to refresh with newer actuals; it replaces rather than accumulates, since the period itself doesn't change mid-year. |
 
